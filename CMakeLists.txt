@@ -26,6 +26,7 @@ find_package(catkin REQUIRED COMPONENTS
   tf2_geometry_msgs
   tf2_ros
   visualization_msgs
+  dynamicvoronoi
 )
 message(STATUS "System: ${CMAKE_SYSTEM}")
 ## System dependencies are found with CMake's conventions
@@ -104,8 +105,12 @@ endif()
 add_message_files(
   FILES
   TrajectoryPointMsg.msg
+  TrajectoryPointSE2.msg
   TrajectoryMsg.msg
   FeedbackMsg.msg
+  ObstacleFootprint.msg
+  ObstacleWithTrajectory.msg
+  ObstacleWithTrajectoryArray.msg
 )
 
 ## Generate services in the 'srv' folder
@@ -164,6 +169,7 @@ catkin_package(
         tf2
         tf2_ros
 	visualization_msgs
+  dynamicvoronoi
   DEPENDS SUITESPARSE G2O
 )
 
@@ -215,6 +221,12 @@ target_link_libraries(test_optim_node
    ${catkin_LIBRARIES}
 )
 
+add_executable(test_optim_node_traj src/test_optim_node_traj.cpp)
+target_link_libraries(test_optim_node_traj
+   teb_local_planner
+   ${EXTERNAL_LIBS}
+   ${catkin_LIBRARIES}
+)
 
 #############
 ## Install ##
@@ -240,7 +252,7 @@ install(PROGRAMS
 install(TARGETS teb_local_planner
    LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
 )
-install(TARGETS test_optim_node
+install(TARGETS test_optim_node test_optim_node_traj
    RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

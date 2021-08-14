@@ -102,19 +102,7 @@ void TebLocalPlannerROS::initialize(std::string name, tf2_ros::Buffer* tf, costm
         
     // create robot footprint/contour model for optimization
     RobotFootprintModelPtr robot_model = getRobotFootprintFromParamServer(nh);
-    
-    // create the planner instance
-    if (cfg_.hcp.enable_homotopy_class_planning)
-    {
-      planner_ = PlannerInterfacePtr(new HomotopyClassPlanner(cfg_, &obstacles_, robot_model, visualization_, &via_points_));
-      ROS_INFO("Parallel planning in distinctive topologies enabled.");
-    }
-    else
-    {
-      planner_ = PlannerInterfacePtr(new TebOptimalPlanner(cfg_, &obstacles_, robot_model, visualization_, &via_points_));
-      ROS_INFO("Parallel planning in distinctive topologies disabled.");
-    }
-    
+
     // init other variables
     tf_ = tf;
     costmap_ros_ = costmap_ros;
@@ -125,7 +113,29 @@ void TebLocalPlannerROS::initialize(std::string name, tf2_ros::Buffer* tf, costm
     global_frame_ = costmap_ros_->getGlobalFrameID();
     cfg_.map_frame = global_frame_; // TODO
     robot_base_frame_ = costmap_ros_->getBaseFrameID();
+    
+    // create the planner instance
+    if (cfg_.hcp.enable_homotopy_class_planning)
+    {
+      planner_ = PlannerInterfacePtr(new HomotopyClassPlanner(cfg_, &obstacles_, robot_model, visualization_, &via_points_));
+      
+      // don't want to change the interface, any better idea?
+      if (cfg_.hcp.voronoi_exploration)
+      {
 
+        boost::shared_ptr<dynamicvoronoi::BoostVoronoi> voronoi(boost::make_shared<dynamicvoronoi::BoostVoronoi>());
+        voronoi->setCostmap2D(costmap_, global_frame_);
+        boost::dynamic_pointer_cast<HomotopyClassPlanner> (planner_)->setVoronoi(voronoi);
+      }
+      
+      ROS_INFO("Parallel planning in distinctive topologies enabled.");
+    }
+    else
+    {
+      planner_ = PlannerInterfacePtr(new TebOptimalPlanner(cfg_, &obstacles_, robot_model, visualization_, &via_points_));
+      ROS_INFO("Parallel planning in distinctive topologies disabled.");
+    }
+    
     //Initialize a costmap to polygon converter
     if (!cfg_.obstacles.costmap_converter_plugin.empty())
     {
@@ -170,6 +180,9 @@ void TebLocalPlannerROS::initialize(std::string name, tf2_ros::Buffer* tf, costm
     // setup callback for custom obstacles
     custom_obst_sub_ = nh.subscribe("obstacles", 1, &TebLocalPlannerROS::customObstacleCB, this);
 
+    // setup callback for custom dynamic obstacles
+    custom_dyn_obst_sub_ = nh.subscribe("dynamic_obstacles", 1, &TebLocalPlannerROS::customDynamicObstacleCB, this);
+
     // setup callback for custom via-points
     via_points_sub_ = nh.subscribe("via_points", 1, &TebLocalPlannerROS::customViaPointsCB, this);
     
@@ -199,6 +212,21 @@ bool TebLocalPlannerROS::setPlan(const std::vector<geometry_msgs::PoseStamped>& 
   {
     ROS_ERROR("teb_local_planner has not been initialized, please call initialize() before using this planner");
     return false;
+  }
+
+  if (global_plan_.size() != 0)
+  {
+    if (global_plan_.back().pose != orig_global_plan.back().pose)
+    {
+      // set navigation goal timestamp if goal is changed
+      goal_timestamp_ = ros::Time::now();
+      count_reschedule_priority_ = 0;
+    }
+  } 
+  else
+  {
+    goal_timestamp_ = ros::Time::now();
+    count_reschedule_priority_ = 0;
   }
 
   // store the global plan
@@ -339,6 +367,8 @@ uint32_t TebLocalPlannerROS::computeVelocityCommands(const geometry_msgs::PoseSt
   // also consider custom obstacles (must be called after other updates, since the container is not cleared)
   updateObstacleContainerWithCustomObstacles();
   
+  // also consider custom dynamic obstacles (must be called after other updates, since the container is not cleared)
+  updateObstacleContainerWithCustomDynamicObstacles();
     
   // Do not allow config changes during the following optimization step
   boost::mutex::scoped_lock cfg_lock(cfg_.configMutex());
@@ -425,8 +455,30 @@ uint32_t TebLocalPlannerROS::computeVelocityCommands(const geometry_msgs::PoseSt
   // store last command (for recovery analysis etc.)
   last_cmd_ = cmd_vel.twist;
   
+  // Priority re-scheduling
+  if (cfg_.obstacles.priority_rescheduling)
+  {
+    if (!planner_->isTrajectoryFeasibleAlt())
+    {
+      count_reschedule_priority_++;
+    }
+    else
+    {
+      count_reschedule_priority_ = 0;
+    }
+
+    // Raise the priority if no feasible trajectory after a few trials. 
+    // After raising its priority, the priority cannot be raised again within a short period.
+    if (count_reschedule_priority_ >= cfg_.obstacles.num_trials_before_reschedule && ros::Time::now() - goal_timestamp_ > ros::Duration(2) ) // TODO: make the number a config
+    {
+      goal_timestamp_ = ros::Time::now();
+      count_reschedule_priority_ = 0;
+      ROS_INFO("priority raised");
+    }
+  }
+
   // Now visualize everything    
-  planner_->visualize();
+  planner_->visualize(goal_timestamp_); // TODO: pass the priority timestamp in a more elegant way 
   visualization_->publishObstacles(obstacles_);
   visualization_->publishViaPoints(via_points_);
   visualization_->publishGlobalPlan(global_plan_);
@@ -595,6 +647,168 @@ void TebLocalPlannerROS::updateObstacleContainerWithCustomObstacles()
     }
   }
 }
+
+
+void TebLocalPlannerROS::updateObstacleContainerWithCustomDynamicObstacles()
+{
+  // Add custom obstacles obtained via message
+  boost::mutex::scoped_lock l(custom_dyn_obst_mutex_);
+  
+  if (!custom_dynamic_obstacle_msg_.obstacles.empty())
+  {
+
+    for (size_t i=0; i<custom_dynamic_obstacle_msg_.obstacles.size(); ++i)
+    {
+      ObstacleWithTrajectory& curr_obstacle =  custom_dynamic_obstacle_msg_.obstacles.at(i);
+
+      // We only use the global header to specify the obstacle coordinate system instead of individual ones
+      geometry_msgs::TransformStamped obstacle_to_map;
+      try 
+      {
+        obstacle_to_map =  tf_->lookupTransform(global_frame_, ros::Time(0),
+                                                curr_obstacle.header.frame_id, ros::Time(0),
+                                                curr_obstacle.header.frame_id, ros::Duration(cfg_.robot.transform_tolerance));
+      }
+      catch (tf::TransformException ex)
+      {
+        ROS_ERROR("%s",ex.what());
+      }
+
+      double theta_offset = tf::getYaw(obstacle_to_map.transform.rotation);
+
+      //time passed since the creation of message
+      ros::Duration time_offset = ros::Time::now() - curr_obstacle.header.stamp; 
+
+      //make a copy from the original message, otherwise will be recursely offset in incorrect way
+      std::vector<TrajectoryPointSE2, std::allocator<TrajectoryPointSE2>> trajectory_copy (curr_obstacle.trajectory);
+
+      //compute relative time from now, and transform pose
+      for (unsigned int j = 0; j < trajectory_copy.size(); j++)
+      {
+        trajectory_copy.at(j).time_from_start -= time_offset;
+
+        // T = T2*T1 = (R2 t2) (R1 t1) = (R2*R1 R2*t1+t2)
+        //             (0   1) (0   1)   (0            1)
+        trajectory_copy.at(j).pose.x = curr_obstacle.trajectory.at(j).pose.x*cos(theta_offset) - curr_obstacle.trajectory.at(j).pose.y*sin(theta_offset) 
+                                      + obstacle_to_map.transform.translation.x;
+        trajectory_copy.at(j).pose.y = curr_obstacle.trajectory.at(j).pose.x*sin(theta_offset) + curr_obstacle.trajectory.at(j).pose.y*cos(theta_offset) 
+                                      + obstacle_to_map.transform.translation.y;
+
+        trajectory_copy.at(j).velocity.linear.x = curr_obstacle.trajectory.at(j).velocity.linear.x*cos(theta_offset) - curr_obstacle.trajectory.at(j).velocity.linear.y*sin(theta_offset) ;
+        trajectory_copy.at(j).velocity.linear.y = curr_obstacle.trajectory.at(j).velocity.linear.x*sin(theta_offset) + curr_obstacle.trajectory.at(j).velocity.linear.y*cos(theta_offset) ;
+
+        trajectory_copy.at(j).pose.theta = curr_obstacle.trajectory.at(j).pose.theta + theta_offset;
+
+      } 
+
+      ObstaclePtr obst_ptr(NULL);
+      PoseSE2 pose_init;
+      if (curr_obstacle.footprint.type == ObstacleFootprint::CircularObstacle) // circle
+      {
+        Eigen::Vector2d speed_init;
+        CircularObstacle* obstacle = new CircularObstacle;
+        obstacle->setTrajectory(trajectory_copy, curr_obstacle.footprint.holonomic);
+        obstacle->predictPoseFromTrajectory(0, pose_init, speed_init);
+        obstacle->x() = pose_init.x();
+        obstacle->y() = pose_init.y();
+        obstacle->radius() = curr_obstacle.footprint.radius;
+        obstacle->setCentroidVelocity(speed_init);
+        obst_ptr = ObstaclePtr(obstacle);
+      }
+      else if (curr_obstacle.footprint.type == ObstacleFootprint::PointObstacle ) // point
+      {
+        Eigen::Vector2d speed_init;
+        PointObstacle* obstacle = new PointObstacle;
+        obstacle->setTrajectory(trajectory_copy, curr_obstacle.footprint.holonomic);
+        obstacle->predictPoseFromTrajectory(0, pose_init, speed_init);
+        obstacle->x() = pose_init.x();
+        obstacle->y() = pose_init.y();
+        obstacle->setCentroidVelocity(speed_init);
+        obst_ptr = ObstaclePtr(obstacle);
+      }
+      else if (curr_obstacle.footprint.type == ObstacleFootprint::LineObstacle ) // line
+      {
+        Eigen::Vector2d start_robot(  curr_obstacle.footprint.point1.x,
+                                      curr_obstacle.footprint.point1.y);
+        Eigen::Vector2d end_robot(  curr_obstacle.footprint.point2.x,
+                                    curr_obstacle.footprint.point2.y);
+        Eigen::Vector2d speed_init;
+        LineObstacle* obstacle = new LineObstacle;
+        Eigen::Vector2d start;
+        Eigen::Vector2d end;
+        obstacle->setTrajectory(trajectory_copy, curr_obstacle.footprint.holonomic);
+        obstacle->predictPoseFromTrajectory(0, pose_init, speed_init);
+        obstacle->transformToWorld(pose_init, start_robot, end_robot, start, end);
+        obstacle->setStart(start);
+        obstacle->setEnd(end);
+        obstacle->setCentroidVelocity(speed_init);
+        obst_ptr = ObstaclePtr(obstacle);
+      }
+      else if (curr_obstacle.footprint.type == ObstacleFootprint::PillObstacle ) // pill
+      {
+        Eigen::Vector2d start_robot(  curr_obstacle.footprint.point1.x,
+                                      curr_obstacle.footprint.point1.y);
+        Eigen::Vector2d end_robot(  curr_obstacle.footprint.point2.x,
+                                    curr_obstacle.footprint.point2.y);
+        Eigen::Vector2d speed_init;
+        PillObstacle* obstacle = new PillObstacle;
+        Eigen::Vector2d start;
+        Eigen::Vector2d end;
+        obstacle->setTrajectory(trajectory_copy, curr_obstacle.footprint.holonomic);
+        obstacle->predictPoseFromTrajectory(0, pose_init, speed_init);
+        obstacle->transformToWorld(pose_init, start_robot, end_robot, start, end);
+        obstacle->setStart(start);
+        obstacle->setEnd(end);
+        obstacle->setRadius(curr_obstacle.footprint.radius);
+        obstacle->setCentroidVelocity(speed_init);
+        obst_ptr = ObstaclePtr(obstacle);
+      }
+      else if(curr_obstacle.footprint.type == ObstacleFootprint::PolygonObstacle ) // polygon
+      {
+        Point2dContainer vertices_robocentric;
+        for (size_t j=0; j<curr_obstacle.footprint.polygon.points.size(); ++j)
+        {
+          Eigen::Vector2d pos( curr_obstacle.footprint.polygon.points[j].x,
+                               curr_obstacle.footprint.polygon.points[j].y);
+          vertices_robocentric.push_back( pos );
+        }
+
+        Eigen::Vector2d speed_init;
+        Point2dContainer vertices;
+        PolygonObstacle* polyobst = new PolygonObstacle;
+        polyobst->setTrajectory(trajectory_copy, curr_obstacle.footprint.holonomic);
+        polyobst->predictPoseFromTrajectory(0, pose_init, speed_init);
+        polyobst->setCentroidVelocity(speed_init);
+        polyobst->transformToWorld(pose_init, vertices_robocentric, vertices);
+
+        for (size_t j=0; j<vertices.size(); ++j)
+        {
+          polyobst->pushBackVertex( vertices.at(j) );
+        }
+        polyobst->finalizePolygon();
+        obst_ptr = ObstaclePtr(polyobst);
+      }
+      else
+      {
+        ROS_WARN("Invalid custom obstacle received. Invalid Type. Skipping...");
+        continue;
+      }
+
+      // prioritized planning
+      if (goal_timestamp_ > curr_obstacle.priority && cfg_.obstacles.prioritised_planning && (pose_init.position()-robot_pose_.position()).norm() > cfg_.obstacles.dist_non_prioritised)
+      {
+        continue;
+      }
+
+      if (!cfg_.obstacles.include_obstacle_trajectory){obst_ptr->disableTrajectory();}
+      if (!cfg_.obstacles.include_dynamic_obstacles){obst_ptr->disableDynamic();}     
+
+      obstacles_.push_back(obst_ptr);
+
+    }
+  }
+}
+
 
 void TebLocalPlannerROS::updateViaPointsContainer(const std::vector<geometry_msgs::PoseStamped>& transformed_plan, double min_separation)
 {
@@ -981,6 +1195,12 @@ void TebLocalPlannerROS::customObstacleCB(const costmap_converter::ObstacleArray
 {
   boost::mutex::scoped_lock l(custom_obst_mutex_);
   custom_obstacle_msg_ = *obst_msg;  
+}
+
+void TebLocalPlannerROS::customDynamicObstacleCB(const ObstacleWithTrajectoryArray::ConstPtr& obst_msg)
+{
+  boost::mutex::scoped_lock l(custom_dyn_obst_mutex_);
+  custom_dynamic_obstacle_msg_ = *obst_msg;  
 }
 
 void TebLocalPlannerROS::customViaPointsCB(const nav_msgs::Path::ConstPtr& via_points_msg)

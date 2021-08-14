@@ -229,6 +229,14 @@ public:
    * @param obstacles Container of obstacles
    */
   void publishFeedbackMessage(const TebOptimalPlanner& teb_planner, const ObstContainer& obstacles);
+
+  /**
+   * @brief Publish Timed_Elastic_Band.
+   * 
+   * Given a Timed_Elastic_Band instance, publish the local plan to  \e ../../local_trajectory 
+   * @param teb const reference to a Timed_Elastic_Band
+   */
+  void publishTrajectory(const TebOptimalPlanner& teb_planner, const RobotFootprintModelPtr& robot_model, const ros::Time& priority);
   
   //@}
 
@@ -255,6 +263,7 @@ protected:
   ros::Publisher teb_poses_pub_; //!< Publisher for the trajectory pose sequence
   ros::Publisher teb_marker_pub_; //!< Publisher for visualization markers
   ros::Publisher feedback_pub_; //!< Publisher for the feedback message for analysis and debug purposes
+  ros::Publisher trajectory_pub_; //!< Publisher for the trajectory message for robot-robot communication
   
   const TebConfig* cfg_; //!< Config class that stores and manages all related parameters
   

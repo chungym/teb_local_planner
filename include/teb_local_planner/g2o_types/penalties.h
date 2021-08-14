@@ -117,6 +117,26 @@ inline double penaltyBoundFromBelow(const double& var, const double& a,const dou
 }
 
 /**
+ * @brief Linear penalty function for bounding \c var from above: \f$ var < a \f$
+ * @param var The scalar that should be bounded
+ * @param a upper bound
+ * @param epsilon safty margin (move bound to the interior of the interval)
+ * @see penaltyBoundFromBelowDerivative
+ * @return Penalty / cost value that is nonzero if the constraint is not satisfied
+ */
+inline double penaltyBoundFromAbove(const double& var, const double& a,const double& epsilon)
+{
+  if (var <= a-epsilon)
+  {
+    return 0.;
+  }
+  else
+  {
+    return (var - (a-epsilon));
+  }
+}
+
+/**
  * @brief Derivative of the linear penalty function for bounding \c var to the interval \f$ -a < var < a \f$
  * @param var The scalar that should be bounded
  * @param a lower and upper absolute bound

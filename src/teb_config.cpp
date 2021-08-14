@@ -96,6 +96,11 @@ void TebConfig::loadRosParamFromNodeHandle(const ros::NodeHandle& nh)
   nh.param("inflation_dist", obstacles.inflation_dist, obstacles.inflation_dist);
   nh.param("dynamic_obstacle_inflation_dist", obstacles.dynamic_obstacle_inflation_dist, obstacles.dynamic_obstacle_inflation_dist);
   nh.param("include_dynamic_obstacles", obstacles.include_dynamic_obstacles, obstacles.include_dynamic_obstacles);
+  nh.param("include_obstacle_trajectory", obstacles.include_obstacle_trajectory, obstacles.include_obstacle_trajectory);
+  nh.param("prioritised_planning", obstacles.prioritised_planning, obstacles.prioritised_planning);
+  nh.param("priority_rescheduling", obstacles.priority_rescheduling, obstacles.priority_rescheduling);
+  nh.param("num_trials_before_reschedule", obstacles.num_trials_before_reschedule, obstacles.num_trials_before_reschedule);
+  nh.param("dist_non_prioritised", obstacles.dist_non_prioritised, obstacles.dist_non_prioritised);
   nh.param("include_costmap_obstacles", obstacles.include_costmap_obstacles, obstacles.include_costmap_obstacles);
   nh.param("costmap_obstacles_behind_robot_dist", obstacles.costmap_obstacles_behind_robot_dist, obstacles.costmap_obstacles_behind_robot_dist);
   nh.param("obstacle_poses_affected", obstacles.obstacle_poses_affected, obstacles.obstacle_poses_affected);
@@ -124,6 +129,7 @@ void TebConfig::loadRosParamFromNodeHandle(const ros::NodeHandle& nh)
   nh.param("weight_kinematics_forward_drive", optim.weight_kinematics_forward_drive, optim.weight_kinematics_forward_drive);
   nh.param("weight_kinematics_turning_radius", optim.weight_kinematics_turning_radius, optim.weight_kinematics_turning_radius);
   nh.param("weight_optimaltime", optim.weight_optimaltime, optim.weight_optimaltime);
+  nh.param("weight_maxtime", optim.weight_maxtime, optim.weight_maxtime);
   nh.param("weight_shortest_path", optim.weight_shortest_path, optim.weight_shortest_path);
   nh.param("weight_obstacle", optim.weight_obstacle, optim.weight_obstacle);
   nh.param("weight_inflation", optim.weight_inflation, optim.weight_inflation);
@@ -139,6 +145,7 @@ void TebConfig::loadRosParamFromNodeHandle(const ros::NodeHandle& nh)
   nh.param("enable_homotopy_class_planning", hcp.enable_homotopy_class_planning, hcp.enable_homotopy_class_planning); 
   nh.param("enable_multithreading", hcp.enable_multithreading, hcp.enable_multithreading); 
   nh.param("simple_exploration", hcp.simple_exploration, hcp.simple_exploration); 
+  nh.param("voronoi_exploration", hcp.voronoi_exploration, hcp.voronoi_exploration);
   nh.param("max_number_classes", hcp.max_number_classes, hcp.max_number_classes);
   nh.param("max_number_plans_in_current_class", hcp.max_number_plans_in_current_class, hcp.max_number_plans_in_current_class);
   nh.param("selection_obst_cost_scale", hcp.selection_obst_cost_scale, hcp.selection_obst_cost_scale);
@@ -158,6 +165,7 @@ void TebConfig::loadRosParamFromNodeHandle(const ros::NodeHandle& nh)
   nh.param("viapoints_all_candidates", hcp.viapoints_all_candidates, hcp.viapoints_all_candidates);
   nh.param("visualize_hc_graph", hcp.visualize_hc_graph, hcp.visualize_hc_graph); 
   nh.param("visualize_with_time_as_z_axis_scale", hcp.visualize_with_time_as_z_axis_scale, hcp.visualize_with_time_as_z_axis_scale);
+  nh.param("visualize_with_time_total_time", hcp.visualize_with_time_total_time, hcp.visualize_with_time_total_time);
   nh.param("delete_detours_backwards", hcp.delete_detours_backwards, hcp.delete_detours_backwards);
   nh.param("detours_orientation_tolerance", hcp.detours_orientation_tolerance, hcp.detours_orientation_tolerance);
   nh.param("length_start_orientation_vector", hcp.length_start_orientation_vector, hcp.length_start_orientation_vector);
@@ -219,6 +227,11 @@ void TebConfig::reconfigure(TebLocalPlannerReconfigureConfig& cfg)
   obstacles.inflation_dist = cfg.inflation_dist;
   obstacles.dynamic_obstacle_inflation_dist = cfg.dynamic_obstacle_inflation_dist;
   obstacles.include_dynamic_obstacles = cfg.include_dynamic_obstacles;
+  obstacles.include_obstacle_trajectory = cfg.include_obstacle_trajectory;
+  obstacles.prioritised_planning = cfg.prioritised_planning;
+  obstacles.priority_rescheduling = cfg.priority_rescheduling;
+  obstacles.num_trials_before_reschedule = cfg.num_trials_before_reschedule;
+  obstacles.dist_non_prioritised = cfg.dist_non_prioritised;
   obstacles.include_costmap_obstacles = cfg.include_costmap_obstacles;
   obstacles.legacy_obstacle_association = cfg.legacy_obstacle_association;
   obstacles.obstacle_association_force_inclusion_factor = cfg.obstacle_association_force_inclusion_factor;
@@ -245,6 +258,7 @@ void TebConfig::reconfigure(TebLocalPlannerReconfigureConfig& cfg)
   optim.weight_kinematics_forward_drive = cfg.weight_kinematics_forward_drive;
   optim.weight_kinematics_turning_radius = cfg.weight_kinematics_turning_radius;
   optim.weight_optimaltime = cfg.weight_optimaltime;
+  optim.weight_maxtime = cfg.weight_maxtime;
   optim.weight_shortest_path = cfg.weight_shortest_path;
   optim.weight_obstacle = cfg.weight_obstacle;
   optim.weight_inflation = cfg.weight_inflation;
@@ -276,6 +290,9 @@ void TebConfig::reconfigure(TebLocalPlannerReconfigureConfig& cfg)
   hcp.viapoints_all_candidates = cfg.viapoints_all_candidates;
   hcp.visualize_hc_graph = cfg.visualize_hc_graph;
   hcp.visualize_with_time_as_z_axis_scale = cfg.visualize_with_time_as_z_axis_scale;
+  hcp.visualize_with_time_total_time = cfg.visualize_with_time_total_time;
+  hcp.delete_detours_backwards = cfg.delete_detours_backwards;
+  hcp.detours_orientation_tolerance = cfg.detours_orientation_tolerance;
   
   // Recovery
   

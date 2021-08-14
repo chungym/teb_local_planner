@@ -42,7 +42,7 @@
 namespace teb_local_planner
 {
 
-void GraphSearchInterface::DepthFirst(HcGraph& g, std::vector<HcGraphVertexType>& visited, const HcGraphVertexType& goal, double start_orientation,
+void GraphSearchInterface::DepthFirst(HcGraph& g, std::vector<HcGraphVertexType>& visited, bool*& visited_array, const HcGraphVertexType& goal, double start_orientation,
                                       double goal_orientation, const geometry_msgs::Twist* start_velocity)
 {
   // see http://www.technical-recipes.com/2011/a-recursive-algorithm-to-find-all-paths-between-two-given-nodes/ for details on finding all simple paths
@@ -56,7 +56,7 @@ void GraphSearchInterface::DepthFirst(HcGraph& g, std::vector<HcGraphVertexType>
   HcGraphAdjecencyIterator it, end;
   for ( boost::tie(it,end) = boost::adjacent_vertices(back,g); it!=end; ++it)
   {
-    if ( std::find(visited.begin(), visited.end(), *it)!=visited.end() )
+    if ( visited_array[*it] )
       continue; // already visited
 
     if ( *it == goal ) // goal reached
@@ -75,16 +75,18 @@ void GraphSearchInterface::DepthFirst(HcGraph& g, std::vector<HcGraphVertexType>
   /// Recursion for all adjacent vertices
   for ( boost::tie(it,end) = boost::adjacent_vertices(back,g); it!=end; ++it)
   {
-    if ( std::find(visited.begin(), visited.end(), *it)!=visited.end() || *it == goal)
+    if ( visited_array[*it] || *it == goal)
       continue; // already visited || goal reached
 
 
     visited.push_back(*it);
+    visited_array[*it] = true;
 
     // recursion step
-    DepthFirst(g, visited, goal, start_orientation, goal_orientation, start_velocity);
+    DepthFirst(g, visited, visited_array, goal, start_orientation, goal_orientation, start_velocity);
 
     visited.pop_back();
+    visited_array[*it] = false;
   }
 }
 
@@ -212,7 +214,14 @@ void lrKeyPointGraph::createGraph(const PoseSE2& start, const PoseSE2& goal, dou
   // Find all paths between start and goal!
   std::vector<HcGraphVertexType> visited;
   visited.push_back(start_vtx);
-  DepthFirst(graph_,visited,goal_vtx, start.theta(), goal.theta(), start_velocity);
+
+  bool* visited_array = new bool[boost::num_vertices(graph_)]();
+  visited_array[start_vtx] = true;
+
+  DepthFirst(graph_, visited, visited_array, goal_vtx, start.theta(), goal.theta(), start_velocity);
+
+  delete[] visited_array;
+  visited_array = NULL;
 }
 
 
@@ -267,7 +276,7 @@ void ProbRoadmapGraph::createGraph(const PoseSE2& start, const PoseSE2& goal, do
   for (int i=0; i < cfg_->hcp.roadmap_graph_no_samples; ++i)
   {
     Eigen::Vector2d sample;
-//     bool coll_free;
+     bool coll_free;
 //     do // sample as long as a collision free sample is found
 //     {
       // Sample coordinates
@@ -276,17 +285,21 @@ void ProbRoadmapGraph::createGraph(const PoseSE2& start, const PoseSE2& goal, do
       // Test for collision
       // we do not care for collision checking here to improve efficiency, since we perform resampling repeatedly.
       // occupied vertices are ignored in the edge insertion state since they always violate the edge-obstacle collision check.
-//       coll_free = true;
-//       for (ObstContainer::const_iterator it_obst = obstacles_->begin(); it_obst != obstacles_->end(); ++it_obst)
-//       {
-//         if ( (*it_obst)->checkCollision(sample, dist_to_obst)) // TODO really keep dist_to_obst here?
-//         {
-//           coll_free = false;
-//           break;
-//         }
-//       }
+       coll_free = true;
+       for (ObstContainer::const_iterator it_obst = hcp_->obstacles()->begin(); it_obst != hcp_->obstacles()->end(); ++it_obst)
+       {
+         // skip dynamic obstacles
+         if ( (*it_obst)->isDynamic() )
+          continue;
+
+         if ( (*it_obst)->checkCollision(sample, std::max(cfg_->obstacles.min_obstacle_dist, hcp_->getInscribedRadius()))) // TODO really keep dist_to_obst here?
+         {
+           coll_free = false;
+           break;
+         }
+       }
 //
-//     } while (!coll_free && ros::ok());
+    if (!coll_free ){continue;}
 
     // Add new vertex
     HcGraphVertexType v = boost::add_vertex(graph_);
@@ -319,7 +332,11 @@ void ProbRoadmapGraph::createGraph(const PoseSE2& start, const PoseSE2& goal, do
       bool collision = false;
       for (ObstContainer::const_iterator it_obst = hcp_->obstacles()->begin(); it_obst != hcp_->obstacles()->end(); ++it_obst)
       {
-        if ( (*it_obst)->checkLineIntersection(graph_[*it_i].pos,graph_[*it_j].pos, dist_to_obst) )
+        // skip dynamic obstacles
+        if ( (*it_obst)->isDynamic() )
+          continue;
+
+        if ( (*it_obst)->checkLineIntersection(graph_[*it_i].pos,graph_[*it_j].pos, std::max(cfg_->obstacles.min_obstacle_dist, hcp_->getInscribedRadius()*0.5)) )
         {
           collision = true;
           break;
@@ -336,7 +353,302 @@ void ProbRoadmapGraph::createGraph(const PoseSE2& start, const PoseSE2& goal, do
   /// Find all paths between start and goal!
   std::vector<HcGraphVertexType> visited;
   visited.push_back(start_vtx);
-  DepthFirst(graph_,visited,goal_vtx, start.theta(), goal.theta(), start_velocity);
+
+  bool* visited_array = new bool[boost::num_vertices(graph_)]();
+  visited_array[start_vtx] = true;
+
+  DepthFirst(graph_, visited, visited_array, goal_vtx, start.theta(), goal.theta(), start_velocity);
+
+  delete[] visited_array;
+  visited_array = NULL;
+
+
+  // augment with Voronoi roadmap
+
+  if (cfg_->hcp.voronoi_exploration && (int)hcp_->getTrajectoryContainer().size() < cfg_->hcp.max_number_classes)
+  {
+
+    hcp_->getVoronoi()->updateGridFromCostmap(); // there is internal checking whether a costmap is set
+    
+
+    for (auto it = hcp_->obstacles()->begin(); it != hcp_->obstacles()->end(); it++)
+    {
+      if (it->get()->isDynamic()){continue;}
+
+      Eigen::Vector2d pos = it->get()->getCentroid();
+
+      if (boost::dynamic_pointer_cast<PointObstacle>(*it) != nullptr)
+      {
+        hcp_->getVoronoi()->addCircularObstacle(pos.x(), pos.y(), cfg_->obstacles.min_obstacle_dist);
+      }
+      else if (boost::dynamic_pointer_cast<CircularObstacle>(*it) != nullptr)
+      {
+        hcp_->getVoronoi()->addCircularObstacle(pos.x(), pos.y(), boost::dynamic_pointer_cast<CircularObstacle>(*it)->radius());
+      }
+      else if (boost::dynamic_pointer_cast<LineObstacle>(*it) != nullptr)
+      {
+        boost::shared_ptr<LineObstacle> ptr = boost::dynamic_pointer_cast<LineObstacle>(*it);
+        hcp_->getVoronoi()->addPillObstacle(ptr->start(), ptr->end(), cfg_->obstacles.min_obstacle_dist);
+      }
+      else if (boost::dynamic_pointer_cast<PillObstacle>(*it) != nullptr)
+      {
+        boost::shared_ptr<PillObstacle> ptr = boost::dynamic_pointer_cast<PillObstacle>(*it);
+        hcp_->getVoronoi()->addPillObstacle(ptr->start(), ptr->end(), ptr->radius());
+      }
+      else if (boost::dynamic_pointer_cast<PolygonObstacle>(*it) != nullptr)
+      {
+        hcp_->getVoronoi()->addPolygonObstacle(boost::dynamic_pointer_cast<PolygonObstacle>(*it)->vertices());
+      }
+    
+    }
+
+    // robot footprint
+    //hcp_->getVoronoi()->addCircularObstacle(start.position().x(), start.position().y(), std::max(hcp_->getInscribedRadius(), cfg_->obstacles.min_obstacle_dist)); 
+
+    hcp_->getVoronoi()->updateGraph();
+
+    
+    boost::optional<std::pair<teb_local_planner::HcGraphVertexType, teb_local_planner::HcGraphVertexType>> start_goal
+      = hcp_->getVoronoi()->addStartAndGoal(start.position(), goal.position()); 
+
+    
+    if (start_goal)
+    {
+      HcGraphVertexType start_vtx, goal_vtx;
+      start_vtx = (*start_goal).first;
+      goal_vtx = (*start_goal).second;
+      /// Find all paths between start and goal!
+      std::vector<HcGraphVertexType> visited;
+      visited.push_back(start_vtx);
+
+      // not neccessary to lock due to single threading, just in case someone creates a separate thread outside
+      boost::mutex::scoped_lock l(*hcp_->getVoronoi()->getMutex());
+
+      graph_ = *hcp_->getVoronoi()->getGraph();
+
+      std::unordered_map<teb_local_planner::HcGraphVertexType, bool> visited_map;
+      visited_map.emplace(start_vtx, true);
+
+      //DepthFirst( graph_, visited, visited_array, goal_vtx, start.theta(), goal.theta(), start_velocity);
+
+      // Breadth First search seems better 
+      std::queue<std::pair<std::vector<HcGraphVertexType>, std::unordered_map<teb_local_planner::HcGraphVertexType, bool>>> queue;
+      queue.push(std::make_pair(visited,visited_map));
+
+      int count = 0;
+      while (!queue.empty() && count < 2000)
+      {
+        count++;
+        // get the first path from the queue
+        std::vector<HcGraphVertexType> path = queue.front().first;
+        std::unordered_map<teb_local_planner::HcGraphVertexType, bool> path_map = queue.front().second;
+        queue.pop();
+
+        HcGraphVertexType back = path.back();
+
+        if ((int)hcp_->getTrajectoryContainer().size() >= cfg_->hcp.max_number_classes)
+          break; // We do not need to search for further possible alternative homotopy classes.
+
+        HcGraphAdjecencyIterator it, end;
+        for ( boost::tie(it,end) = boost::adjacent_vertices(back, graph_); it!=end; ++it)
+        {
+
+          if (*it == goal_vtx)
+          {
+            std::vector<HcGraphVertexType> new_path = std::vector<HcGraphVertexType>(path);
+            new_path.push_back(*it);
+
+            double dist = 0;
+            auto prev_it = new_path.begin();
+            // the path should contains at least 2 elements, start & goal
+            for (auto path_it = std::next(prev_it); path_it != new_path.end(); path_it++)
+            {
+              dist += (graph_[*path_it].pos - graph_[*prev_it].pos).norm();
+              prev_it = path_it;
+            }
+
+            if (dist < cfg_->hcp.max_ratio_detours_duration_best_duration * cfg_->trajectory.max_global_plan_lookahead_dist)
+            {
+              // Add new TEB, if this path belongs to a new homotopy class
+              hcp_->addAndInitNewTeb(new_path.begin(), new_path.end(), boost::bind(getVector2dFromHcGraph, _1, boost::cref(graph_)),
+                                    start.theta(), goal.theta(), start_velocity);
+            }
+
+            continue;
+          } 
+
+          if ( path_map.find(*it) != path_map.end() )
+            continue; // already visited || goal reached
+
+
+          std::vector<HcGraphVertexType> new_path = std::vector<HcGraphVertexType>(path);
+          new_path.push_back(*it);
+          std::unordered_map<teb_local_planner::HcGraphVertexType, bool> new_map(path_map);
+          new_map.emplace(*it, true);
+          queue.push(std::make_pair(new_path, new_map));
+
+        }
+      }
+
+
+      //delete[] visited_array;
+      //visited_array = NULL; 
+    }
+    
+  }
+
+}
+
+
+void VoronoiGraph::createGraph(const PoseSE2& start, const PoseSE2& goal, double dist_to_obst, double obstacle_heading_threshold, const geometry_msgs::Twist* start_velocity)
+{
+  // Clear existing graph and paths
+  clearGraph();
+  if((int)hcp_->getTrajectoryContainer().size() >= cfg_->hcp.max_number_classes)
+    return;
+  // Direction-vector between start and goal and normal-vector:
+  Eigen::Vector2d diff = goal.position()-start.position();
+  double start_goal_dist = diff.norm();
+
+  if (start_goal_dist<cfg_->goal_tolerance.xy_goal_tolerance)
+  {
+    ROS_DEBUG("HomotopyClassPlanner::createVoronoiGraph(): xy-goal-tolerance already reached.");
+    if (hcp_->getTrajectoryContainer().empty())
+    {
+      ROS_INFO("HomotopyClassPlanner::createVoronoiGraph(): Initializing a small straight line to just correct orientation errors.");
+      hcp_->addAndInitNewTeb(start, goal, start_velocity);
+    }
+    return;
+  }
+
+
+  hcp_->getVoronoi()->updateGridFromCostmap(); // there is internal checking whether a costmap is set
+  
+
+  for (auto it = hcp_->obstacles()->begin(); it != hcp_->obstacles()->end(); it++)
+  {
+    Eigen::Vector2d pos = it->get()->getCentroid();
+
+    if (boost::dynamic_pointer_cast<PointObstacle>(*it) != nullptr)
+    {
+      hcp_->getVoronoi()->addCircularObstacle(pos.x(), pos.y(), cfg_->obstacles.min_obstacle_dist);
+    }
+    else if (boost::dynamic_pointer_cast<CircularObstacle>(*it) != nullptr)
+    {
+      hcp_->getVoronoi()->addCircularObstacle(pos.x(), pos.y(), boost::dynamic_pointer_cast<CircularObstacle>(*it)->radius());
+    }
+    else if (boost::dynamic_pointer_cast<LineObstacle>(*it) != nullptr)
+    {
+      boost::shared_ptr<LineObstacle> ptr = boost::dynamic_pointer_cast<LineObstacle>(*it);
+      hcp_->getVoronoi()->addPillObstacle(ptr->start(), ptr->end(), cfg_->obstacles.min_obstacle_dist);
+    }
+    else if (boost::dynamic_pointer_cast<PillObstacle>(*it) != nullptr)
+    {
+      boost::shared_ptr<PillObstacle> ptr = boost::dynamic_pointer_cast<PillObstacle>(*it);
+      hcp_->getVoronoi()->addPillObstacle(ptr->start(), ptr->end(), ptr->radius());
+    }
+    else if (boost::dynamic_pointer_cast<PolygonObstacle>(*it) != nullptr)
+    {
+      hcp_->getVoronoi()->addPolygonObstacle(boost::dynamic_pointer_cast<PolygonObstacle>(*it)->vertices());
+    }
+  
+  }
+
+  // robot footprint
+  //hcp_->getVoronoi()->addCircularObstacle(start.position().x(), start.position().y(), std::max(hcp_->getInscribedRadius(), cfg_->obstacles.min_obstacle_dist)); 
+
+  hcp_->getVoronoi()->updateGraph();
+
+  
+  boost::optional<std::pair<teb_local_planner::HcGraphVertexType, teb_local_planner::HcGraphVertexType>> start_goal
+    = hcp_->getVoronoi()->addStartAndGoal(start.position(), goal.position()); 
+
+  
+    if (start_goal)
+    {
+      HcGraphVertexType start_vtx, goal_vtx;
+      start_vtx = (*start_goal).first;
+      goal_vtx = (*start_goal).second;
+      /// Find all paths between start and goal!
+      std::vector<HcGraphVertexType> visited;
+      visited.push_back(start_vtx);
+
+      // not neccessary to lock due to single threading, just in case someone creates a separate thread outside
+      boost::mutex::scoped_lock l(*hcp_->getVoronoi()->getMutex());
+
+      graph_ = *hcp_->getVoronoi()->getGraph();
+
+      std::unordered_map<teb_local_planner::HcGraphVertexType, bool> visited_map;
+      visited_map.emplace(start_vtx, true);
+
+      //DepthFirst( graph_, visited, visited_array, goal_vtx, start.theta(), goal.theta(), start_velocity);
+
+      // Breadth First search seems better 
+      std::queue<std::pair<std::vector<HcGraphVertexType>, std::unordered_map<teb_local_planner::HcGraphVertexType, bool>>> queue;
+      queue.push(std::make_pair(visited,visited_map));
+
+      int count = 0;
+      while (!queue.empty() && count < 2000)
+      {
+        count++;
+        // get the first path from the queue
+        std::vector<HcGraphVertexType> path = queue.front().first;
+        std::unordered_map<teb_local_planner::HcGraphVertexType, bool> path_map = queue.front().second;
+        queue.pop();
+
+        HcGraphVertexType back = path.back();
+
+        if ((int)hcp_->getTrajectoryContainer().size() >= cfg_->hcp.max_number_classes)
+          break; // We do not need to search for further possible alternative homotopy classes.
+
+        HcGraphAdjecencyIterator it, end;
+        for ( boost::tie(it,end) = boost::adjacent_vertices(back, graph_); it!=end; ++it)
+        {
+
+          if (*it == goal_vtx)
+          {
+            std::vector<HcGraphVertexType> new_path = std::vector<HcGraphVertexType>(path);
+            new_path.push_back(*it);
+
+            double dist = 0;
+            auto prev_it = new_path.begin();
+            // the path should contains at least 2 elements, start & goal
+            for (auto path_it = std::next(prev_it); path_it != new_path.end(); path_it++)
+            {
+              dist += (graph_[*path_it].pos - graph_[*prev_it].pos).norm();
+              prev_it = path_it;
+            }
+
+            if (dist < cfg_->hcp.max_ratio_detours_duration_best_duration * cfg_->trajectory.max_global_plan_lookahead_dist)
+            {
+              // Add new TEB, if this path belongs to a new homotopy class
+              hcp_->addAndInitNewTeb(new_path.begin(), new_path.end(), boost::bind(getVector2dFromHcGraph, _1, boost::cref(graph_)),
+                                    start.theta(), goal.theta(), start_velocity);
+            }
+
+            continue;
+          } 
+
+          if ( path_map.find(*it) != path_map.end() )
+            continue; // already visited || goal reached
+
+
+          std::vector<HcGraphVertexType> new_path = std::vector<HcGraphVertexType>(path);
+          new_path.push_back(*it);
+          std::unordered_map<teb_local_planner::HcGraphVertexType, bool> new_map(path_map);
+          new_map.emplace(*it, true);
+          queue.push(std::make_pair(new_path, new_map));
+
+        }
+      }
+
+
+      //delete[] visited_array;
+      //visited_array = NULL; 
+    }
+  
+
+
 }
 
 } // end namespace

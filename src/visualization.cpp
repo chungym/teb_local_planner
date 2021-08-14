@@ -39,6 +39,7 @@
 #include <teb_local_planner/visualization.h>
 #include <teb_local_planner/optimal_planner.h>
 #include <teb_local_planner/FeedbackMsg.h>
+#include <teb_local_planner/ObstacleWithTrajectory.h>
 
 namespace teb_local_planner
 {
@@ -65,7 +66,8 @@ void TebVisualization::initialize(ros::NodeHandle& nh, const TebConfig& cfg)
   local_plan_pub_ = nh.advertise<nav_msgs::Path>("local_plan",1);
   teb_poses_pub_ = nh.advertise<geometry_msgs::PoseArray>("teb_poses", 100);
   teb_marker_pub_ = nh.advertise<visualization_msgs::Marker>("teb_markers", 1000);
-  feedback_pub_ = nh.advertise<teb_local_planner::FeedbackMsg>("teb_feedback", 10);  
+  feedback_pub_ = nh.advertise<teb_local_planner::FeedbackMsg>("teb_feedback", 10);
+  trajectory_pub_ = nh.advertise<teb_local_planner::ObstacleWithTrajectory>("local_trajectory", 1);
   
   initialized_ = true; 
 }
@@ -164,7 +166,7 @@ void TebVisualization::publishObstacles(const ObstContainer& obstacles) const
     marker.id = 0;
     marker.type = visualization_msgs::Marker::POINTS;
     marker.action = visualization_msgs::Marker::ADD;
-    marker.lifetime = ros::Duration(2.0);
+    marker.lifetime = ros::Duration(1.0);
     
     for (ObstContainer::const_iterator obst = obstacles.begin(); obst != obstacles.end(); ++obst)
     {
@@ -183,20 +185,43 @@ void TebVisualization::publishObstacles(const ObstContainer& obstacles) const
       else // Spatiotemporally point obstacles become a line
       {
         marker.type = visualization_msgs::Marker::LINE_LIST;
-        geometry_msgs::Point start;
-        start.x = pobst->x();
-        start.y = pobst->y();
-        start.z = 0;
-        marker.points.push_back(start);
 
-        geometry_msgs::Point end;
-        double t = 20;
-        Eigen::Vector2d pred;
-        pobst->predictCentroidConstantVelocity(t, pred);
-        end.x = pred[0];
-        end.y = pred[1];
-        end.z = cfg_->hcp.visualize_with_time_as_z_axis_scale*t;
-        marker.points.push_back(end);
+        if (pobst->isWithTrajectory())
+        {
+          for (double i = 0; i < cfg_->hcp.visualize_with_time_total_time; i+=0.2)
+          {
+            geometry_msgs::Point start;
+            PoseSE2 pred;
+            pobst->predictPoseFromTrajectory(double(i), pred);
+            start.x = pred.x();
+            start.y = pred.y();
+            start.z = cfg_->hcp.visualize_with_time_as_z_axis_scale*double(i);
+            marker.points.push_back(start);
+            geometry_msgs::Point end;
+            pobst->predictPoseFromTrajectory(double(i+1), pred);
+            end.x = pred.x();
+            end.y = pred.y();
+            end.z = cfg_->hcp.visualize_with_time_as_z_axis_scale*double(i+1);
+            marker.points.push_back(end);
+          }
+        }
+
+        else
+        {
+          geometry_msgs::Point start;
+          start.x = pobst->x();
+          start.y = pobst->y();
+          start.z = 0;
+          marker.points.push_back(start);
+          geometry_msgs::Point end;
+          double t = cfg_->hcp.visualize_with_time_total_time;
+          Eigen::Vector2d pred;
+          pobst->predictCentroidConstantVelocity(t, pred);
+          end.x = pred[0];
+          end.y = pred[1];
+          end.z = cfg_->hcp.visualize_with_time_as_z_axis_scale*t;
+          marker.points.push_back(end);
+        }
       }
     }
     
@@ -207,7 +232,8 @@ void TebVisualization::publishObstacles(const ObstContainer& obstacles) const
     marker.color.g = 0.0;
     marker.color.b = 0.0;
 
-    teb_marker_pub_.publish( marker );
+    if (!marker.points.empty()) {teb_marker_pub_.publish( marker );}
+
   }
   
   // Visualize circular obstacles
@@ -224,14 +250,66 @@ void TebVisualization::publishObstacles(const ObstContainer& obstacles) const
       marker.header.stamp = ros::Time::now();
       marker.ns = "CircularObstacles";
       marker.id = idx++;
-      marker.type = visualization_msgs::Marker::SPHERE_LIST;
+
       marker.action = visualization_msgs::Marker::ADD;
-      marker.lifetime = ros::Duration(2.0);
-      geometry_msgs::Point point;
-      point.x = pobst->x();
-      point.y = pobst->y();
-      point.z = 0;
-      marker.points.push_back(point);
+      marker.lifetime = ros::Duration(1.0);
+
+
+      if (cfg_->hcp.visualize_with_time_as_z_axis_scale < 0.001)
+      {
+
+        marker.type = visualization_msgs::Marker::SPHERE_LIST;
+
+        geometry_msgs::Point point;
+        point.x = pobst->x();
+        point.y = pobst->y();
+        point.z = 0;
+        marker.points.push_back(point);
+      }
+
+      else // Spatiotemporally point obstacles become a line
+      {
+        marker.type = visualization_msgs::Marker::LINE_LIST;
+
+        if (pobst->isWithTrajectory())
+        {
+          for (double i = 0; i < cfg_->hcp.visualize_with_time_total_time; i+=0.2) 
+          {
+            geometry_msgs::Point start;
+            PoseSE2 pred;
+            pobst->predictPoseFromTrajectory(double(i), pred);
+            start.x = pred.x();
+            start.y = pred.y();
+            start.z = cfg_->hcp.visualize_with_time_as_z_axis_scale*double(i);
+            marker.points.push_back(start);
+            geometry_msgs::Point end;
+            pobst->predictPoseFromTrajectory(double(i+1), pred);
+            end.x = pred.x();
+            end.y = pred.y();
+            end.z = cfg_->hcp.visualize_with_time_as_z_axis_scale*double(i+1);
+            marker.points.push_back(end);
+          }
+        }
+
+        else
+        {
+          geometry_msgs::Point start;
+          start.x = pobst->getCentroid().x();
+          start.y = pobst->getCentroid().y();
+          start.z = 0;
+          marker.points.push_back(start);
+          geometry_msgs::Point end;
+          double t = cfg_->hcp.visualize_with_time_total_time;
+          Eigen::Vector2d pred;
+          pobst->predictCentroidConstantVelocity(t, pred);
+          end.x = pred[0];
+          end.y = pred[1];
+          end.z = cfg_->hcp.visualize_with_time_as_z_axis_scale*t;
+          marker.points.push_back(end);
+        }
+
+      }
+
 
       marker.scale.x = pobst->radius();
       marker.scale.y = pobst->radius();
@@ -240,7 +318,7 @@ void TebVisualization::publishObstacles(const ObstContainer& obstacles) const
       marker.color.g = 1.0;
       marker.color.b = 0.0;
 
-      teb_marker_pub_.publish( marker );
+      if (!marker.points.empty()) {teb_marker_pub_.publish( marker );}
     }
   }
 
@@ -258,19 +336,173 @@ void TebVisualization::publishObstacles(const ObstContainer& obstacles) const
       marker.header.stamp = ros::Time::now();
       marker.ns = "LineObstacles";
       marker.id = idx++;
-      marker.type = visualization_msgs::Marker::LINE_STRIP;
+
       marker.action = visualization_msgs::Marker::ADD;
-      marker.lifetime = ros::Duration(2.0);
-      geometry_msgs::Point start;
-      start.x = pobst->start().x();
-      start.y = pobst->start().y();
-      start.z = 0;
-      marker.points.push_back(start);
-      geometry_msgs::Point end;
-      end.x = pobst->end().x();
-      end.y = pobst->end().y();
-      end.z = 0;
-      marker.points.push_back(end);
+      marker.lifetime = ros::Duration(1.0);
+
+      if (cfg_->hcp.visualize_with_time_as_z_axis_scale < 0.001)
+      {
+
+        marker.type = visualization_msgs::Marker::LINE_STRIP;
+
+        geometry_msgs::Point start;
+        start.x = pobst->start().x();
+        start.y = pobst->start().y();
+        start.z = 0;
+        marker.points.push_back(start);
+        geometry_msgs::Point end;
+        end.x = pobst->end().x();
+        end.y = pobst->end().y();
+        end.z = 0;
+        marker.points.push_back(end);
+      }
+
+      else // Spatiotemporally point obstacles become a line
+      {
+        marker.type = visualization_msgs::Marker::LINE_LIST;
+
+        if (pobst->isWithTrajectory())
+        {
+          for (double i = 0; i < cfg_->hcp.visualize_with_time_total_time; i+=0.2)
+          {
+            geometry_msgs::Point start;
+            PoseSE2 pred;
+            pobst->predictPoseFromTrajectory(double(i), pred);
+            start.x = pred.x();
+            start.y = pred.y();
+            start.z = cfg_->hcp.visualize_with_time_as_z_axis_scale*double(i);
+            marker.points.push_back(start);
+            geometry_msgs::Point end;
+            pobst->predictPoseFromTrajectory(double(i+1), pred);
+            end.x = pred.x();
+            end.y = pred.y();
+            end.z = cfg_->hcp.visualize_with_time_as_z_axis_scale*double(i+1);
+            marker.points.push_back(end);
+          }
+        }
+
+        else
+        {
+          geometry_msgs::Point start;
+          start.x = pobst->getCentroid().x();
+          start.y = pobst->getCentroid().y();
+          start.z = 0;
+          marker.points.push_back(start);
+          geometry_msgs::Point end;
+          double t = cfg_->hcp.visualize_with_time_total_time;
+          Eigen::Vector2d pred;
+          pobst->predictCentroidConstantVelocity(t, pred);
+          end.x = pred[0];
+          end.y = pred[1];
+          end.z = cfg_->hcp.visualize_with_time_as_z_axis_scale*t;
+          marker.points.push_back(end);
+        }
+
+      }
+
+      marker.scale.x = 0.1;
+      marker.scale.y = 0.1;
+      marker.color.a = 1.0;
+      marker.color.r = 0.0;
+      marker.color.g = 1.0;
+      marker.color.b = 0.0;
+      
+      if (!marker.points.empty()) {teb_marker_pub_.publish( marker );}
+    }
+  }
+  
+  // Visualize Pill obstacles
+  {
+    std::size_t idx = 0;
+    for (ObstContainer::const_iterator obst = obstacles.begin(); obst != obstacles.end(); ++obst)
+    {	
+      boost::shared_ptr<PillObstacle> pobst = boost::dynamic_pointer_cast<PillObstacle>(*obst);   
+      if (!pobst)
+        continue;
+
+      visualization_msgs::Marker marker;
+      marker.header.frame_id = cfg_->map_frame;
+      marker.header.stamp = ros::Time::now();
+      marker.ns = "LineObstacles";
+      marker.id = idx++;
+      marker.action = visualization_msgs::Marker::ADD;
+      marker.lifetime = ros::Duration(1.0);
+
+      if (cfg_->hcp.visualize_with_time_as_z_axis_scale < 0.001)
+      {
+
+        marker.type = visualization_msgs::Marker::LINE_STRIP;
+
+        geometry_msgs::Point start;
+        start.x = pobst->start().x();
+        start.y = pobst->start().y();
+        start.z = 0;
+        marker.points.push_back(start);
+        geometry_msgs::Point end;
+        end.x = pobst->end().x();
+        end.y = pobst->end().y();
+        end.z = 0;
+        marker.points.push_back(end);
+      }
+
+      else // Spatiotemporally point obstacles become a line
+      {
+        marker.type = visualization_msgs::Marker::LINE_LIST;
+
+        if (pobst->isWithTrajectory())
+        {
+          for (double i = 0; i < cfg_->hcp.visualize_with_time_total_time; i+=0.2)
+          {
+            geometry_msgs::Point start;
+            PoseSE2 pred;
+            pobst->predictPoseFromTrajectory(double(i), pred);
+            start.x = pred.x();
+            start.y = pred.y();
+            start.z = cfg_->hcp.visualize_with_time_as_z_axis_scale*double(i);
+            marker.points.push_back(start);
+            geometry_msgs::Point end;
+            pobst->predictPoseFromTrajectory(double(i+1), pred);
+            end.x = pred.x();
+            end.y = pred.y();
+            end.z = cfg_->hcp.visualize_with_time_as_z_axis_scale*double(i+1);
+            marker.points.push_back(end);
+
+            geometry_msgs::Point pill_start;
+            geometry_msgs::Point pill_end;
+            Eigen::Vector2d pill_start_v, pill_end_v; 
+            PoseSE2 pred_pill = pred;
+            pred_pill.theta() -= pobst->getInitPose().theta();
+            pobst->transformToWorld(pred_pill, pobst->start_robocentric(), pobst->end_robocentric(), pill_start_v, pill_end_v);
+            pill_start.x = pill_start_v.x();
+            pill_start.y = pill_start_v.y();
+            pill_start.z = cfg_->hcp.visualize_with_time_as_z_axis_scale*double(i+1);
+            pill_end.x = pill_end_v.x();
+            pill_end.y = pill_end_v.y();
+            pill_end.z = cfg_->hcp.visualize_with_time_as_z_axis_scale*double(i+1);
+            marker.points.push_back(pill_start);
+            marker.points.push_back(pill_end);
+
+          }
+        }
+
+        else
+        {
+          geometry_msgs::Point start;
+          start.x = pobst->getCentroid().x();
+          start.y = pobst->getCentroid().y();
+          start.z = 0;
+          marker.points.push_back(start);
+          geometry_msgs::Point end;
+          double t = cfg_->hcp.visualize_with_time_total_time;
+          Eigen::Vector2d pred;
+          pobst->predictCentroidConstantVelocity(t, pred);
+          end.x = pred[0];
+          end.y = pred[1];
+          end.z = cfg_->hcp.visualize_with_time_as_z_axis_scale*t;
+          marker.points.push_back(end);
+        }
+
+      }
   
       marker.scale.x = 0.1;
       marker.scale.y = 0.1;
@@ -279,7 +511,7 @@ void TebVisualization::publishObstacles(const ObstContainer& obstacles) const
       marker.color.g = 1.0;
       marker.color.b = 0.0;
       
-      teb_marker_pub_.publish( marker );     
+      if (!marker.points.empty()) {teb_marker_pub_.publish( marker );}
     }
   }
   
@@ -300,7 +532,7 @@ void TebVisualization::publishObstacles(const ObstContainer& obstacles) const
       marker.id = idx++;
       marker.type = visualization_msgs::Marker::LINE_STRIP;
       marker.action = visualization_msgs::Marker::ADD;
-      marker.lifetime = ros::Duration(2.0);
+      marker.lifetime = ros::Duration(1.0);
       
       for (Point2dContainer::const_iterator vertex = pobst->vertices().begin(); vertex != pobst->vertices().end(); ++vertex)
       {
@@ -328,7 +560,7 @@ void TebVisualization::publishObstacles(const ObstContainer& obstacles) const
       marker.color.g = 0.0;
       marker.color.b = 0.0;
       
-      teb_marker_pub_.publish( marker );     
+      if (!marker.points.empty()) {teb_marker_pub_.publish( marker );}
     }
   }
 }
@@ -493,6 +725,78 @@ void TebVisualization::publishFeedbackMessage(const TebOptimalPlanner& teb_plann
   
   feedback_pub_.publish(msg);
 }
+
+
+void TebVisualization::publishTrajectory(const TebOptimalPlanner& teb_planner, const RobotFootprintModelPtr& robot_model, const ros::Time& priority)
+{
+  ObstacleWithTrajectory msg;
+  msg.header.stamp = ros::Time::now();
+  msg.header.frame_id = cfg_->map_frame;
+
+  msg.priority = priority;
+  
+  std::vector<TrajectoryPointSE2> trajectory;
+  teb_planner.getFullTrajectorySE2(trajectory);
+  msg.trajectory = trajectory;
+
+  if (cfg_->robot.max_vel_y == 0 && cfg_->trajectory.exact_arc_length)
+  {
+    msg.footprint.holonomic = false;
+  }
+  else 
+  {
+    msg.footprint.holonomic = true;
+  } 
+
+  if (boost::dynamic_pointer_cast<PointRobotFootprint>(robot_model) != nullptr)
+  {
+    msg.footprint.type = 1;
+  }
+  else if (boost::dynamic_pointer_cast<CircularRobotFootprint>(robot_model) != nullptr)
+  {
+    boost::shared_ptr<CircularRobotFootprint> footprint = boost::dynamic_pointer_cast<CircularRobotFootprint>(robot_model);
+    msg.footprint.type = 2;
+    msg.footprint.radius = footprint->getInscribedRadius();
+  }
+  else if (boost::dynamic_pointer_cast<LineRobotFootprint>(robot_model) != nullptr)
+  {
+    boost::shared_ptr<LineRobotFootprint> footprint = boost::dynamic_pointer_cast<LineRobotFootprint>(robot_model);
+    msg.footprint.type = 3;
+    Eigen::Vector2d start = footprint->getLineStart();
+    Eigen::Vector2d end = footprint->getLineEnd();
+    msg.footprint.point1.x = start.x();
+    msg.footprint.point1.y = start.y();
+    msg.footprint.point1.z = 0;
+    msg.footprint.point2.x = end.x();
+    msg.footprint.point2.y = end.y();
+    msg.footprint.point2.z = 0;
+  }
+  else if (boost::dynamic_pointer_cast<TwoCirclesRobotFootprint>(robot_model) != nullptr)
+  {
+    boost::shared_ptr<TwoCirclesRobotFootprint> footprint = boost::dynamic_pointer_cast<TwoCirclesRobotFootprint>(robot_model);
+    msg.footprint.type = 4;
+    double front = footprint->getFrontOffset();
+    double rear = footprint->getRearOffset();
+    msg.footprint.point1.x = front;
+    msg.footprint.point1.y = 0;
+    msg.footprint.point1.z = 0;
+    msg.footprint.point2.x = rear;
+    msg.footprint.point2.y = 0;
+    msg.footprint.point2.z = 0;
+    msg.footprint.radius = footprint->getFrontRadius();
+  }
+  else if (boost::dynamic_pointer_cast<PolygonRobotFootprint>(robot_model) != nullptr)
+  {
+    boost::shared_ptr<PolygonRobotFootprint> footprint = boost::dynamic_pointer_cast<PolygonRobotFootprint>(robot_model);
+    msg.footprint.type = 5;
+    geometry_msgs::Polygon polygon;
+    footprint->getVertices(polygon);
+    msg.footprint.polygon = polygon;
+  }
+  
+  trajectory_pub_.publish(msg);
+}
+
 
 std_msgs::ColorRGBA TebVisualization::toColorMsg(double a, double r, double g, double b)
 {

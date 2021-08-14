@@ -369,6 +369,10 @@ public:
       return std::min(min_longitudinal, min_lateral);
   }
 
+  virtual const double& getFrontOffset() const {return front_offset_;}
+  virtual const double& getRearOffset() const {return rear_offset_;}
+  virtual const double& getFrontRadius() const {return front_radius_;}
+
 private:
     
   double front_offset_;
@@ -505,6 +509,9 @@ public:
   {
       return 0.0; // lateral distance = 0.0
   }
+
+  virtual const Eigen::Vector2d getLineStart() const{return line_start_;}
+  virtual const Eigen::Vector2d getLineEnd() const{return line_end_;}
 
 private:
     
@@ -651,6 +658,18 @@ public:
      double vertex_dist = vertices_.back().norm();
      double edge_dist = distance_point_to_segment_2d(center, vertices_.back(), vertices_.front());
      return std::min(min_dist, std::min(vertex_dist, edge_dist));
+  }
+
+  virtual const void getVertices(geometry_msgs::Polygon& container) const
+  {
+    for (int i = 0; i < vertices_.size(); ++i)
+    {
+      geometry_msgs::Point32 pt;
+      pt.x = vertices_.at(i).x();
+      pt.y = vertices_.at(i).y();
+      pt.z = 0;
+      container.points.push_back(pt);
+    }
   }
 
 private:

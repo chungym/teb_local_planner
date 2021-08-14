@@ -156,7 +156,7 @@ public:
    * @brief Visualize planner specific stuff.
    * Overwrite this method to provide an interface to perform all planner related visualizations at once.
    */ 
-  virtual void visualize()
+  virtual void visualize(const ros::Time& priority)
   {
   }
   
@@ -187,6 +187,16 @@ public:
   {
   }      
                 
+  /**
+   * @brief alternative method to check whether the planned trajectory is feasible or not.
+   * 
+   * This method currently checks whether there is a gap in the trajectory
+   * by checking the max cost of velocity edges.
+   * @return \c true, if the robot footprint along the first part of the trajectory intersects with 
+   *         any obstacle in the costmap, \c false otherwise.
+   */
+  virtual bool isTrajectoryFeasibleAlt() = 0;
+    
 };
 
 //! Abbrev. for shared instances of PlannerInterface or it's subclasses 

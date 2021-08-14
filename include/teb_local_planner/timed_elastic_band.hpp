@@ -81,6 +81,8 @@ bool TimedElasticBand::initTrajectoryToGoal(BidirIter path_start, BidirIter path
     
     if (!isInit())
     {
+      double prev_orient = start_orient;
+
       addPose(start_position, start_orient, true); // add starting point and mark it as fixed for optimization		
 
       // we insert middle points now (increase start by 1 and decrease goal by 1)
@@ -111,10 +113,11 @@ bool TimedElasticBand::initTrajectoryToGoal(BidirIter path_start, BidirIter path
             if (timestep<=0) timestep=0.2; // TODO: this is an assumption
             
             double yaw = atan2(diff_last[1],diff_last[0]);
-            if (backwards)
+            if (backwards or abs(g2o::normalize_theta(yaw-prev_orient))> M_PI * 2/3 )
                 yaw = g2o::normalize_theta(yaw + M_PI);
             addPoseAndTimeDiff(curr_point, yaw ,timestep);
             
+            prev_orient = yaw;
             /*
             // TODO: the following code does not seem to hot-start the optimizer. Instead it recudes convergence time.
 

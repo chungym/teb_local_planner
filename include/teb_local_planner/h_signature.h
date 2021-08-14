@@ -296,10 +296,13 @@ public:
         BidirIter path_iter;
         TimeDiffSequence::iterator timediff_iter;
 
-        Eigen::Vector3d s1 (obstacles->at(l)->getCentroid()(0), obstacles->at(l)->getCentroid()(1), 0);
+        Eigen::Vector3d s1;
+        //Eigen::Vector3d s1 (obstacles->at(l)->getCentroid()(0), obstacles->at(l)->getCentroid()(1), 0);
         double t = 120; // some large value for defining the end point of the obstacle/"conductor" model
         Eigen::Vector3d s2;
+        obstacles->at(l)->predictCentroidConstantVelocity(-t, s1.head(2));
         obstacles->at(l)->predictCentroidConstantVelocity(t, s2.head(2));
+        s1[2] = -t;
         s2[2] = t;
         Eigen::Vector3d ds = s2 - s1;
         double ds_sq_norm = ds.squaredNorm(); // by definition not zero as t > 0 (3rd component)
@@ -332,12 +335,30 @@ public:
           Eigen::Vector3d dl = 1.0/static_cast<double>(num_int_steps_per_segment) * direction_vec; // Integrate with multiple steps between each pose
           Eigen::Vector3d p1, p2, d, phi;
           for (int i = 0; i < num_int_steps_per_segment; ++i, r += dl)
-          {
-            p1 = s1 - r;
-            p2 = s2 - r;
-            d = (ds.cross(p1.cross(p2))) / ds_sq_norm;
-            phi = 1.0 / d.squaredNorm() * ((d.cross(p2) / p2.norm()) - (d.cross(p1) / p1.norm()));
+          { 
+            Eigen::Vector3d up(0,0,1.0);
+            Eigen::Vector3d s_inst;
+            if (obstacles->at(l)->isWithTrajectory())
+            {
+              PoseSE2 pose;
+              Eigen::Vector2d speed;
+              obstacles->at(l)->predictPoseFromTrajectory(r.z(), pose, speed);
+              s_inst.head(2) = pose.position();
+              s_inst[2] = r.z();
+              d = s_inst-r;
+              phi = 2.0 / d.squaredNorm() * d.cross(up);
+            }
+            else
+            {
+              //original algorithm
+              p1 = s1 - r;
+              p2 = s2 - r;
+              d = (ds.cross(p1.cross(p2))) / ds_sq_norm;
+              phi = 1.0 / d.squaredNorm() * ((d.cross(p2) / p2.norm()) - (d.cross(p1) / p1.norm()));
+            }
+
             H += phi.dot(dl);
+
           }
         }
 

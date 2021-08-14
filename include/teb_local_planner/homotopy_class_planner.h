@@ -64,6 +64,7 @@
 #include <teb_local_planner/equivalence_relations.h>
 #include <teb_local_planner/graph_search.h>
 
+#include <dynamicvoronoi/boost_voronoi.h>
 
 namespace teb_local_planner
 {
@@ -143,7 +144,19 @@ public:
   void initialize(const TebConfig& cfg, ObstContainer* obstacles = NULL, RobotFootprintModelPtr robot_model = boost::make_shared<PointRobotFootprint>(),
                   TebVisualizationPtr visualization = TebVisualizationPtr(), const ViaPointContainer* via_points = NULL);
 
+  /**
+   * @brief Initialize the voronoi diagram object
+   * @param voronoi pointer to the voronoi object
+   */
+  void setVoronoi(boost::shared_ptr<dynamicvoronoi::BoostVoronoi> voronoi);
 
+  /**
+   * @brief return the voronoi diagram object
+   */
+  const boost::shared_ptr<dynamicvoronoi::BoostVoronoi>& getVoronoi();
+
+
+  double getInscribedRadius(){ return robot_model_->getInscribedRadius(); }
 
   /** @name Plan a trajectory */
   //@{
@@ -226,6 +239,16 @@ public:
                                     double inscribed_radius = 0.0, double circumscribed_radius=0.0, int look_ahead_idx=-1, double feasibility_check_lookahead_distance=-1.0);
 
   /**
+   * @brief alternative method to check whether the planned trajectory is feasible or not.
+   * 
+   * This method currently checks whether there is a gap in the trajectory
+   * by checking the max cost of velocity edges.
+   * @return \c true, if the robot footprint along the first part of the trajectory intersects with 
+   *         any obstacle in the costmap, \c false otherwise.
+   */
+  virtual bool isTrajectoryFeasibleAlt();
+
+  /**
    * @brief In case of empty best teb, scores again the available plans to find the best one.
    *        The best_teb_ variable is updated consequently.
    * @return Shared pointer to the best TebOptimalPlanner that contains the selected trajectory (TimedElasticBand).
@@ -258,7 +281,7 @@ public:
     * Make sure to register a TebVisualization instance before using setVisualization() or an overlaoded constructor.
     * @see setVisualization
     */
-  virtual void visualize();
+  virtual void visualize(const ros::Time& priority);
 
   //@}
 
@@ -566,7 +589,7 @@ protected:
 
   TebOptimalPlannerPtr last_best_teb_;  //!< Points to the plan used in the previous control cycle
 
-
+  boost::shared_ptr<dynamicvoronoi::BoostVoronoi> voronoi_;
 
 public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW

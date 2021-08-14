@@ -321,7 +321,7 @@ public:
    * Make sure to register a TebVisualization instance before using setVisualization() or an overlaoded constructor.
    * @see setVisualization
    */
-  virtual void visualize();
+  virtual void visualize(const ros::Time& priority);
   
   //@}
   
@@ -451,6 +451,19 @@ public:
   inline void extractVelocity(const PoseSE2& pose1, const PoseSE2& pose2, double dt, double& vx, double& vy, double& omega) const;
   
   /**
+   * @brief Extract the velocity from consecutive poses and a time difference (including strafing velocity for holonomic robots)
+   * 
+   * Similar to extractVelocity(), but the velocity is in direction of fixed planning frame not robot base frame
+   * @param pose1 pose at time k
+   * @param pose2 consecutive pose at time k+1
+   * @param dt actual time difference between k and k+1 (must be >0 !!!)
+   * @param[out] vx translational velocity
+   * @param[out] vy strafing velocity which can be nonzero for holonomic robots
+   * @param[out] omega rotational velocity
+   */
+  inline void extractVelocityFixedFrame(const PoseSE2& pose1, const PoseSE2& pose2, double dt, double& vx, double& vy, double& omega) const;
+  
+  /**
    * @brief Compute the velocity profile of the trajectory
    * 
    * This method computes the translational and rotational velocity for the complete
@@ -484,6 +497,15 @@ public:
   void getFullTrajectory(std::vector<TrajectoryPointMsg>& trajectory) const;
   
   /**
+   * @brief Return the complete trajectory including poses, velocity profiles and temporal information
+   * 
+   * Similar to getFullTrajectory(), but the trajectory consists of PoseSE2
+   * @todo The acceleration profile is not added at the moment.
+   * @param[out] trajectory the resulting trajectory
+   */
+  void getFullTrajectorySE2(std::vector<TrajectoryPointSE2>& trajectory) const;
+
+  /**
    * @brief Check whether the planned trajectory is feasible or not.
    * 
    * This method currently checks only that the trajectory, or a part of the trajectory is collision free.
@@ -498,6 +520,19 @@ public:
    */
   virtual bool isTrajectoryFeasible(base_local_planner::CostmapModel* costmap_model, const std::vector<geometry_msgs::Point>& footprint_spec, double inscribed_radius = 0.0,
           double circumscribed_radius=0.0, int look_ahead_idx=-1, double feasibility_check_lookahead_distance=-1.0);
+  
+  /**
+   * @brief alternative method to check whether the planned trajectory is feasible or not.
+   * 
+   * This method currently checks whether there is a gap in the trajectory
+   * by checking the max cost of velocity edges.
+   * @return \c true, if the robot footprint along the first part of the trajectory intersects with 
+   *         any obstacle in the costmap, \c false otherwise.
+   */
+  virtual bool isTrajectoryFeasibleAlt();
+
+  virtual int increaseInfeasibleCount();
+  virtual void resetInfeasibilityCount();
   
   //@}
   
@@ -580,6 +615,14 @@ protected:
    * @see optimizeGraph
    */
   void AddEdgesTimeOptimal();
+
+  /**
+   * @brief Add all edges (local cost functions) for bounding time difference
+   * @see EdgesMaxTime
+   * @see buildGraph
+   * @see optimizeGraph
+   */
+  void AddEdgesMaxTime();
 
   /**
    * @brief Add all edges (local cost functions) for minimizing the path length
@@ -678,6 +721,8 @@ protected:
   
   double cost_; //!< Store cost value of the current hyper-graph
   RotType prefer_rotdir_; //!< Store whether to prefer a specific initial rotation in optimization (might be activated in case the robot oscillates)
+  double max_cost_; //!< Max. vel. cost among all edges
+  int infeasible_count_; //!< Count how many cycles since the TEB is infeasible
   
   // internal objects (memory management owned)
   TebVisualizationPtr visualization_; //!< Instance of the visualization class

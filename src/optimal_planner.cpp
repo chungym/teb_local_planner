@@ -44,6 +44,7 @@
 #include <teb_local_planner/g2o_types/edge_acceleration.h>
 #include <teb_local_planner/g2o_types/edge_kinematics.h>
 #include <teb_local_planner/g2o_types/edge_time_optimal.h>
+#include <teb_local_planner/g2o_types/edge_max_time.h>
 #include <teb_local_planner/g2o_types/edge_shortest_path.h>
 #include <teb_local_planner/g2o_types/edge_obstacle.h>
 #include <teb_local_planner/g2o_types/edge_dynamic_obstacle.h>
@@ -102,6 +103,7 @@ void TebOptimalPlanner::initialize(const TebConfig& cfg, ObstContainer* obstacle
   vel_goal_.second.linear.y = 0;
   vel_goal_.second.angular.z = 0;
   initialized_ = true;
+  infeasible_count_ = 0;
 }
 
 
@@ -110,7 +112,7 @@ void TebOptimalPlanner::setVisualization(TebVisualizationPtr visualization)
   visualization_ = visualization;
 }
 
-void TebOptimalPlanner::visualize()
+void TebOptimalPlanner::visualize(const ros::Time& priority)
 {
   if (!visualization_)
     return;
@@ -122,6 +124,7 @@ void TebOptimalPlanner::visualize()
   
   if (cfg_->trajectory.publish_feedback)
     visualization_->publishFeedbackMessage(*this, *obstacles_);
+    visualization_->publishTrajectory(*this, robot_model_, priority);
  
 }
 
@@ -348,6 +351,8 @@ bool TebOptimalPlanner::buildGraph(double weight_multiplier)
   AddEdgesAcceleration();
 
   AddEdgesTimeOptimal();	
+
+  AddEdgesMaxTime();
 
   AddEdgesShortestPath();
   
@@ -886,6 +891,25 @@ void TebOptimalPlanner::AddEdgesTimeOptimal()
   }
 }
 
+
+void TebOptimalPlanner::AddEdgesMaxTime()
+{
+  if (cfg_->optim.weight_maxtime<=0.01) 
+    return; // if weight equals zero skip adding edges!
+
+  Eigen::Matrix<double,1,1> information;
+  information.fill(cfg_->optim.weight_maxtime);
+
+  for (int i=0; i < teb_.sizeTimeDiffs(); ++i)
+  {
+    EdgeMaxTime* maxtime_edge = new EdgeMaxTime;
+    maxtime_edge->setVertex(0,teb_.TimeDiffVertex(i));
+    maxtime_edge->setInformation(information);
+    maxtime_edge->setTebConfig(*cfg_);
+    optimizer_->addEdge(maxtime_edge);
+  }
+}
+
 void TebOptimalPlanner::AddEdgesShortestPath()
 {
   if (cfg_->optim.weight_shortest_path==0)
@@ -1033,6 +1057,7 @@ void TebOptimalPlanner::computeCurrentCost(double obst_cost_scale, double viapoi
   optimizer_->computeInitialGuess();
   
   cost_ = 0;
+  max_cost_ = 0;
 
   if (alternative_time_cost)
   {
@@ -1061,6 +1086,10 @@ void TebOptimalPlanner::computeCurrentCost(double obst_cost_scale, double viapoi
     {
       continue; // skip these edges if alternative_time_cost is active
     }
+    else if (dynamic_cast<EdgeVelocity*>(*it) != nullptr)
+    {
+      if (cur_cost > max_cost_){max_cost_ = cur_cost;}
+    }
     cost_ += cur_cost;
   }
 
@@ -1081,13 +1110,20 @@ void TebOptimalPlanner::extractVelocity(const PoseSE2& pose1, const PoseSE2& pos
   }
   
   Eigen::Vector2d deltaS = pose2.position() - pose1.position();
+  double orientdiff = g2o::normalize_theta(pose2.theta() - pose1.theta());
   
   if (cfg_->robot.max_vel_y == 0) // nonholonomic robot
   {
+    double dist = deltaS.norm();
+    if (cfg_->trajectory.exact_arc_length && orientdiff != 0)
+    {
+        double radius =  dist/(2*sin(orientdiff/2));
+        dist = fabs( orientdiff * radius ); // actual arg length!
+    }
     Eigen::Vector2d conf1dir( cos(pose1.theta()), sin(pose1.theta()) );
     // translational velocity
     double dir = deltaS.dot(conf1dir);
-    vx = (double) g2o::sign(dir) * deltaS.norm()/dt;
+    vx = (double) g2o::sign(dir) * dist/dt;
     vy = 0;
   }
   else // holonomic robot
@@ -1104,7 +1140,51 @@ void TebOptimalPlanner::extractVelocity(const PoseSE2& pose1, const PoseSE2& pos
   }
   
   // rotational velocity
+  omega = orientdiff/dt;
+}
+
+
+void TebOptimalPlanner::extractVelocityFixedFrame(const PoseSE2& pose1, const PoseSE2& pose2, double dt, double& vx, double& vy, double& omega) const
+{
+  if (dt == 0)
+  {
+    vx = 0;
+    vy = 0;
+    omega = 0;
+    return;
+  }
+  
+  Eigen::Vector2d deltaS = pose2.position() - pose1.position();
   double orientdiff = g2o::normalize_theta(pose2.theta() - pose1.theta());
+  
+  if (cfg_->robot.max_vel_y == 0) // nonholonomic robot
+  {
+    double dist = deltaS.norm();
+    if (cfg_->trajectory.exact_arc_length && orientdiff != 0)
+    {
+        double radius =  dist/(2*sin(orientdiff/2));
+        dist = fabs( orientdiff * radius ); // actual arg length!
+        // translational velocity
+        vx = cos(pose1.theta()) * dist/dt;
+        vy = sin(pose1.theta()) * dist/dt;
+    }
+    else
+    {
+      // if not exact_arc_length, the velocity must point toward the next pose instead of the heading.
+      // otherwise the trajectory won't be continuous
+      vx = deltaS.x() / dt;
+      vy = deltaS.y() / dt;
+    }
+  }
+  else // holonomic robot
+  {
+    // transform pose 2 into the current robot frame (pose1)
+    // for velocities only the rotation of the direction vector is necessary.
+    vx = deltaS.x() / dt;
+    vy = deltaS.y() / dt;    
+  }
+  
+  // rotational velocity
   omega = orientdiff/dt;
 }
 
@@ -1222,6 +1302,52 @@ void TebOptimalPlanner::getFullTrajectory(std::vector<TrajectoryPointMsg>& traje
   goal.time_from_start.fromSec(curr_time);
 }
 
+void TebOptimalPlanner::getFullTrajectorySE2(std::vector<TrajectoryPointSE2>& trajectory) const
+{
+  int n = teb_.sizePoses();
+  
+  trajectory.resize(n);
+  
+  if (n == 0)
+    return;
+     
+  double curr_time = 0;
+    
+  // intermediate points
+  for (int i=0; i < n-1; ++i)
+  {
+    TrajectoryPointSE2& point = trajectory[i];
+    point.pose.x = teb_.Pose(i).x();
+    point.pose.y = teb_.Pose(i).y();
+    point.pose.theta = teb_.Pose(i).theta();
+
+    point.velocity.linear.z = 0;
+    point.velocity.angular.x = point.velocity.angular.y = 0;
+    double vel2_x, vel2_y, omega2;
+    extractVelocityFixedFrame(teb_.Pose(i), teb_.Pose(i+1), teb_.TimeDiff(i), vel2_x, vel2_y, omega2);
+    point.velocity.linear.x = vel2_x;
+    point.velocity.linear.y = vel2_y;
+    point.velocity.angular.z = omega2;    
+    point.time_from_start.fromSec(curr_time);
+    
+    curr_time += teb_.TimeDiff(i);
+  }
+  
+  // goal
+  TrajectoryPointSE2& goal = trajectory.back();
+  goal.pose.x = teb_.BackPose().x();
+  goal.pose.y = teb_.BackPose().y();
+  goal.pose.theta = teb_.BackPose().theta();
+  goal.velocity.linear.z = 0;
+  goal.velocity.angular.x = goal.velocity.angular.y = 0;
+  
+  //using zero goal velocity provides better results
+  goal.velocity.linear.x = vel_goal_.second.linear.x;
+  goal.velocity.linear.y = vel_goal_.second.linear.y;
+  goal.velocity.angular.z = vel_goal_.second.angular.z;
+  
+  goal.time_from_start.fromSec(curr_time);
+}
 
 bool TebOptimalPlanner::isTrajectoryFeasible(base_local_planner::CostmapModel* costmap_model, const std::vector<geometry_msgs::Point>& footprint_spec,
                                              double inscribed_radius, double circumscribed_radius, int look_ahead_idx, double feasibility_check_lookahead_distance)
@@ -1282,5 +1408,22 @@ bool TebOptimalPlanner::isTrajectoryFeasible(base_local_planner::CostmapModel* c
   }
   return true;
 }
+
+bool TebOptimalPlanner::isTrajectoryFeasibleAlt()
+{
+  return (max_cost_ < cfg_->optim.weight_max_vel_x /50);
+}
+
+int TebOptimalPlanner::increaseInfeasibleCount()
+{
+  infeasible_count_++;
+  return infeasible_count_;
+}
+
+void TebOptimalPlanner::resetInfeasibilityCount()
+{
+  infeasible_count_ = 0;
+}
+
 
 } // namespace teb_local_planner

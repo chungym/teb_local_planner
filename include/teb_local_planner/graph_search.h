@@ -137,7 +137,7 @@ protected:
    * @param goal_orientation Orientation of the goal trajectory pose, required to initialize the trajectory/TEB
    * @param start_velocity start velocity (optional)
    */
-  void DepthFirst(HcGraph& g, std::vector<HcGraphVertexType>& visited, const HcGraphVertexType& goal, double start_orientation, double goal_orientation, const geometry_msgs::Twist* start_velocity);
+  void DepthFirst(HcGraph& g, std::vector<HcGraphVertexType>& visited, bool*& visited_array,  const HcGraphVertexType& goal, double start_orientation, double goal_orientation, const geometry_msgs::Twist* start_velocity);
 
 
 protected:
@@ -207,6 +207,38 @@ public:
 private:
     boost::random::mt19937 rnd_generator_; //!< Random number generator used by createProbRoadmapGraph to sample graph keypoints.
 };
+
+
+class VoronoiGraph : public GraphSearchInterface
+{
+public:
+  VoronoiGraph(const TebConfig& cfg, HomotopyClassPlanner* hcp) : GraphSearchInterface(cfg, hcp){}
+
+  virtual ~VoronoiGraph(){}
+
+
+  /**
+   * @brief Create a graph and sample points in the global frame that can be used to explore new possible paths between start and goal.
+   *
+   * This version of the graph samples keypoints in a predefined area (config) in the current frame between start and goal. \n
+   * Afterwards all feasible paths between start and goal point are extracted using a Depth First Search. \n
+   * Use the sampling method for complex, non-point or huge obstacles. \n
+   * You may call createGraph() instead.
+   *
+   * @see createGraph
+   * @param start Start pose from wich to start on (e.g. the current robot pose).
+   * @param goal Goal pose to find paths to (e.g. the robot's goal).
+   * @param dist_to_obst Allowed distance to obstacles: if not satisfying, the path will be rejected (note, this is not the distance used for optimization).
+   * @param no_samples number of random samples
+   * @param obstacle_heading_threshold Value of the normalized scalar product between obstacle heading and goal heading in order to take them (obstacles) into account [0,1]
+   * @param start_velocity start velocity (optional)
+   */
+  virtual void createGraph(const PoseSE2& start, const PoseSE2& goal, double dist_to_obst, double obstacle_heading_threshold, const geometry_msgs::Twist* start_velocity);
+
+};
+
+
+
 } // end namespace
 
 #endif // GRAPH_SEARCH_INTERFACE_H

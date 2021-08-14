@@ -123,6 +123,11 @@ public:
     double inflation_dist; //!< buffer zone around obstacles with non-zero penalty costs (should be larger than min_obstacle_dist in order to take effect)
     double dynamic_obstacle_inflation_dist; //!< Buffer zone around predicted locations of dynamic obstacles with non-zero penalty costs (should be larger than min_obstacle_dist in order to take effect)
     bool include_dynamic_obstacles; //!< Specify whether the movement of dynamic obstacles should be predicted by a constant velocity model (this also effects homotopy class planning); If false, all obstacles are considered to be static.
+    bool include_obstacle_trajectory; //!< Specify whether custom obstacles with trajectory will be considered in topic /obstacles_with_trajectories. If false, If false, constant velocity model is used.
+    bool prioritised_planning; //!< Specify whether custom obstacles with trajectory will be considered according to robot priority.
+    bool priority_rescheduling; //!< Specify whether the priority can be re-schedule if no feasible solution is found using the current priority.
+    int num_trials_before_reschedule; //!< Number of trials to find a feasible trajectory before re-scheduling priority.
+    double dist_non_prioritised; //!< Euclidean distance threshold below which no prioritised planning.
     bool include_costmap_obstacles; //!< Specify whether the obstacles in the costmap should be taken into account directly
     double costmap_obstacles_behind_robot_dist; //!< Limit the occupied local costmap obstacles taken into account for planning behind the robot (specify distance in meters)
     int obstacle_poses_affected; //!< The obstacle position is attached to the closest pose on the trajectory to reduce computational effort, but take a number of neighbors into account as well
@@ -159,6 +164,7 @@ public:
     double weight_kinematics_forward_drive; //!< Optimization weight for forcing the robot to choose only forward directions (positive transl. velocities, only diffdrive robot)
     double weight_kinematics_turning_radius; //!< Optimization weight for enforcing a minimum turning radius (carlike robots)
     double weight_optimaltime; //!< Optimization weight for contracting the trajectory w.r.t. transition time
+    double weight_maxtime; //!< Optimization weight for limiting the expansion of the trajectory w.r.t. transition time
     double weight_shortest_path; //!< Optimization weight for contracting the trajectory w.r.t. path length
     double weight_obstacle; //!< Optimization weight for satisfying a minimum separation from obstacles
     double weight_inflation; //!< Optimization weight for the inflation penalty (should be small)
@@ -178,6 +184,7 @@ public:
     bool enable_homotopy_class_planning; //!< Activate homotopy class planning (Requires much more resources that simple planning, since multiple trajectories are optimized at once).
     bool enable_multithreading; //!< Activate multiple threading for planning multiple trajectories in parallel.
     bool simple_exploration; //!< If true, distinctive trajectories are explored using a simple left-right approach (pass each obstacle on the left or right side) for path generation, otherwise sample possible roadmaps randomly in a specified region between start and goal.
+    bool voronoi_exploration; //!< If true, distinctive trajectories are explored using a generalised voronoi diagram
     int max_number_classes; //!< Specify the maximum number of allowed alternative homotopy classes (limits computational effort)
     int max_number_plans_in_current_class; //!< Specify the maximum number of trajectories to try that are in the same homotopy class as the current trajectory (helps avoid local minima)
     double selection_cost_hysteresis; //!< Specify how much trajectory cost must a new candidate have w.r.t. a previously selected trajectory in order to be selected (selection if new_cost < old_cost*factor).
@@ -201,6 +208,7 @@ public:
 
     bool visualize_hc_graph; //!< Visualize the graph that is created for exploring new homotopy classes.
     double visualize_with_time_as_z_axis_scale; //!< If this value is bigger than 0, the trajectory and obstacles are visualized in 3d using the time as the z-axis scaled by this value. Most useful for dynamic obstacles.
+    double visualize_with_time_total_time; //!< total time in the future to visualise the trajectory
     bool delete_detours_backwards; //!< If enabled, the planner will discard the plans detouring backwards with respect to the best plan
     double detours_orientation_tolerance; //!< A plan is considered a detour if its start orientation differs more than this from the best plan
     double length_start_orientation_vector; //!< Length of the vector used to compute the start orientation of a plan
@@ -289,6 +297,11 @@ public:
     obstacles.inflation_dist = 0.6;
     obstacles.dynamic_obstacle_inflation_dist = 0.6;
     obstacles.include_dynamic_obstacles = true;
+    obstacles.include_obstacle_trajectory = true;
+    obstacles.prioritised_planning = true;
+    obstacles.priority_rescheduling = true;
+    obstacles.num_trials_before_reschedule = 5;
+    obstacles.dist_non_prioritised = 1.5;
     obstacles.include_costmap_obstacles = true;
     obstacles.costmap_obstacles_behind_robot_dist = 1.5;
     obstacles.obstacle_poses_affected = 25;
@@ -319,6 +332,7 @@ public:
     optim.weight_kinematics_forward_drive = 1;
     optim.weight_kinematics_turning_radius = 1;
     optim.weight_optimaltime = 1;
+    optim.weight_maxtime = 5;
     optim.weight_shortest_path = 0;
     optim.weight_obstacle = 50;
     optim.weight_inflation = 0.1;
@@ -336,6 +350,7 @@ public:
     hcp.enable_homotopy_class_planning = true;
     hcp.enable_multithreading = true;
     hcp.simple_exploration = false;
+    hcp.voronoi_exploration = true;
     hcp.max_number_classes = 5;
     hcp.selection_cost_hysteresis = 1.0;
     hcp.selection_prefer_initial_plan = 0.95;
@@ -357,6 +372,7 @@ public:
 
     hcp.visualize_hc_graph = false;
     hcp.visualize_with_time_as_z_axis_scale = 0.0;
+    hcp.visualize_with_time_total_time = 5.0;
     hcp.delete_detours_backwards = true;
     hcp.detours_orientation_tolerance = M_PI / 2.0;
     hcp.length_start_orientation_vector = 0.4;

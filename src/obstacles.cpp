@@ -40,9 +40,91 @@
 #include <ros/console.h>
 #include <ros/assert.h>
 // #include <teb_local_planner/misc.h>
+#include <g2o/stuff/misc.h>
 
 namespace teb_local_planner
 {
+
+
+void Obstacle::setTrajectory(const std::vector<TrajectoryPointSE2>& trajectory, bool holonomic){
+  trajectory_ = trajectory;
+  holonomic_ = holonomic;
+  withTrajectory_ = true;
+  dynamic_ = true;
+  PoseSE2 pred;
+  predictPoseFromTrajectory(0, pred);
+  pose_init_ = pred;
+}
+
+void Obstacle::predictPoseFromTrajectory(double t, PoseSE2& pose, Eigen::Vector2d& speed) const
+{
+  if (!withTrajectory_)
+  {
+    return;
+  }
+
+  //find bounding point
+  //unsigned int right = -1;
+  //unsigned int left = -1;
+
+  /*
+  for (unsigned int i=0; i<trajectory_.size(); ++i)
+  {
+    if (trajectory_.at(i).time_from_start.toSec() > t)
+    {
+      right = i;
+      break;
+    }
+  }
+  */
+
+  // Binary search to replace linear search for better efficiency
+  auto right = std::upper_bound(trajectory_.begin(), trajectory_.end(), t, 
+        [](double val, const teb_local_planner::TrajectoryPointSE2 point){ return val < point.time_from_start.toSec();});
+
+
+  // extrapolate
+  if (right == trajectory_.end())
+  {
+    //left = trajectory_.size()-1;
+    auto left = std::prev(trajectory_.end());
+    const double t_duration = t - left->time_from_start.toSec();
+    pose.x() = left->pose.x + left->velocity.linear.x * t_duration;
+    pose.y() = left->pose.y + left->velocity.linear.y * t_duration;
+    pose.theta() =  left->pose.theta;
+    speed.x() = left->velocity.linear.x;
+    speed.y() = left->velocity.linear.y;
+    
+  }
+  //else if (right == 0)
+  else if (right == trajectory_.begin())
+  {
+    ROS_WARN("Obstacle::predictCentroidFromTrajectory(): Predicting past position at time: %f.", t);
+  }
+  else //interpolate
+  {
+    auto left = std::prev(right);
+    const double deltaT = t - left->time_from_start.toSec();
+    const double angleDiff = right->pose.theta - left->pose.theta;
+    const Eigen::Vector2d v(left->velocity.linear.x, left->velocity.linear.y);
+
+    if (!holonomic_ && angleDiff != 0)
+    {
+      pose.x() = left->pose.x + v.norm()/left->velocity.angular.z * ( sin(left->velocity.angular.z*deltaT+left->pose.theta) - sin(left->pose.theta) );
+      pose.y() = left->pose.y - v.norm()/left->velocity.angular.z * ( cos(left->velocity.angular.z*deltaT+left->pose.theta) - cos(left->pose.theta) );
+    }
+    else
+    {
+      pose.x() = left->pose.x + left->velocity.linear.x * deltaT;
+      pose.y() = left->pose.y + left->velocity.linear.y * deltaT;
+    }
+
+    pose.theta() = left->pose.theta + left->velocity.angular.z * deltaT;
+    speed.x() = left->velocity.linear.x;
+    speed.y() = left->velocity.linear.y;
+  }
+  return;
+}
 
 
 void PolygonObstacle::fixPolygonClosure()
@@ -123,6 +205,12 @@ void PolygonObstacle::calcCentroid()
     // calc centroid of that line
     centroid_ = 0.5*(vertices_[i_cand] + vertices_[j_cand]);
   }
+
+  for (int i=0; i < noVertices(); ++i)
+  {
+    vertices_robot_.push_back(vertices_[i]-centroid_);
+  }
+
 }
 
 

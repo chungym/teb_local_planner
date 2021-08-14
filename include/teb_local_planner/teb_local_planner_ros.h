@@ -62,6 +62,7 @@
 #include <visualization_msgs/MarkerArray.h>
 #include <visualization_msgs/Marker.h>
 #include <costmap_converter/ObstacleMsg.h>
+#include <teb_local_planner/ObstacleWithTrajectoryArray.h>
 
 // transforms
 #include <tf2/utils.h>
@@ -249,6 +250,12 @@ protected:
    */
   void updateObstacleContainerWithCustomObstacles();
 
+  /**
+   * @brief Update internal obstacle vector based on custom messages received via subscriber
+   * @remarks All previous obstacles are NOT cleared. Call this method after other update methods.
+   * @sa updateObstacleContainerWithCostmap, updateObstacleContainerWithCostmapConverter
+   */
+  void updateObstacleContainerWithCustomDynamicObstacles();
 
   /**
    * @brief Update internal via-point container based on the current reference plan
@@ -275,6 +282,12 @@ protected:
     */
   void customObstacleCB(const costmap_converter::ObstacleArrayMsg::ConstPtr& obst_msg);
   
+   /**
+    * @brief Callback for custom dynamic obstacles that are not obtained from the costmap 
+    * @param obst_msg pointer to the message containing a list of polygon shaped obstacles
+    */
+  void customDynamicObstacleCB(const ObstacleWithTrajectoryArray::ConstPtr& obst_msg);
+
    /**
     * @brief Callback for custom via-points
     * @param via_points_msg pointer to the message containing a list of via-points
@@ -408,6 +421,8 @@ private:
   FailureDetector failure_detector_; //!< Detect if the robot got stucked
   
   std::vector<geometry_msgs::PoseStamped> global_plan_; //!< Store the current global plan
+  ros::Time goal_timestamp_; //!< Store time stamp the goal is received
+  int count_reschedule_priority_; //!< Number of trials of getting "infeasible" trajectory before re-scheduling priority.
   
   base_local_planner::OdometryHelperRos odom_helper_; //!< Provides an interface to receive the current velocity from the robot
   
@@ -418,6 +433,10 @@ private:
   ros::Subscriber custom_obst_sub_; //!< Subscriber for custom obstacles received via a ObstacleMsg.
   boost::mutex custom_obst_mutex_; //!< Mutex that locks the obstacle array (multi-threaded)
   costmap_converter::ObstacleArrayMsg custom_obstacle_msg_; //!< Copy of the most recent obstacle message
+
+  ros::Subscriber custom_dyn_obst_sub_; //!< Subscriber for custom obstacles received via a ObstacleMsg.
+  boost::mutex custom_dyn_obst_mutex_; //!< Mutex that locks the obstacle array (multi-threaded)
+  ObstacleWithTrajectoryArray custom_dynamic_obstacle_msg_; //!< Copy of the most recent obstacle message
 
   ros::Subscriber via_points_sub_; //!< Subscriber for custom via-points received via a Path msg.
   bool custom_via_points_active_; //!< Keep track whether valid via-points have been received from via_points_sub_

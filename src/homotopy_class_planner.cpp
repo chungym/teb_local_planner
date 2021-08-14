@@ -84,7 +84,18 @@ void HomotopyClassPlanner::setVisualization(TebVisualizationPtr visualization)
   visualization_ = visualization;
 }
 
+void HomotopyClassPlanner::setVoronoi(boost::shared_ptr<dynamicvoronoi::BoostVoronoi> voronoi)
+{
+  voronoi_ = voronoi;
 
+  // uncomment for pure voronoi roadmap
+  //graph_search_ = boost::shared_ptr<GraphSearchInterface>(new VoronoiGraph(*cfg_, this));
+}
+
+const boost::shared_ptr<dynamicvoronoi::BoostVoronoi>& HomotopyClassPlanner::getVoronoi()
+{
+  return voronoi_;
+}
 
 bool HomotopyClassPlanner::plan(const std::vector<geometry_msgs::PoseStamped>& initial_plan, const geometry_msgs::Twist* start_vel, bool free_goal_vel)
 {
@@ -145,7 +156,7 @@ bool HomotopyClassPlanner::getVelocityCommand(double& vx, double& vy, double& om
 
 
 
-void HomotopyClassPlanner::visualize()
+void HomotopyClassPlanner::visualize(const ros::Time& priority)
 {
   if (visualization_)
   {
@@ -171,6 +182,7 @@ void HomotopyClassPlanner::visualize()
         int best_idx = bestTebIdx();
         if (best_idx>=0)
           visualization_->publishFeedbackMessage(tebs_, (unsigned int) best_idx, *obstacles_);
+          visualization_->publishTrajectory(*best_teb, robot_model_, priority);
       }
     }
   }
@@ -704,6 +716,11 @@ bool HomotopyClassPlanner::isTrajectoryFeasible(base_local_planner::CostmapModel
   return feasible;
 }
 
+bool HomotopyClassPlanner::isTrajectoryFeasibleAlt()
+{
+  return (best_teb_.get()->isTrajectoryFeasibleAlt());
+}
+
 TebOptimalPlannerPtr HomotopyClassPlanner::findBestTeb()
 {
   if(tebs_.empty())
@@ -766,6 +783,24 @@ void HomotopyClassPlanner::deletePlansDetouringBackwards(const double orient_thr
     return;  // The plan is shorter than len_orientation_vector
   for(auto it_teb = tebs_.begin(); it_teb != tebs_.end();)
   {
+
+    // this does not work very well
+    
+    if(!it_teb->get()->isTrajectoryFeasibleAlt())
+    {
+      int count = it_teb->get()->increaseInfeasibleCount();
+      if (count > 20)
+      {
+        ROS_DEBUG("Removing a teb because it's stuck in obstacles");
+        it_teb = removeTeb(*it_teb);  // Deletes teb that stuck in obstacles
+        continue;
+      }
+    }
+    else
+    {
+      it_teb->get()->resetInfeasibilityCount();
+    }
+
     if(*it_teb == best_teb_)  // The current plan should not be considered a detour
     {
       ++it_teb;

@@ -52,10 +52,11 @@
 #include <geometry_msgs/Polygon.h>
 #include <geometry_msgs/TwistWithCovariance.h>
 #include <geometry_msgs/QuaternionStamped.h>
+#include <teb_local_planner/TrajectoryPointSE2.h>
 
 #include <tf/tf.h>
 #include <teb_local_planner/distance_calculations.h>
-
+#include <teb_local_planner/pose_se2.h>
 
 namespace teb_local_planner
 {
@@ -71,7 +72,7 @@ public:
   /**
     * @brief Default constructor of the abstract obstacle class
     */
-  Obstacle() : dynamic_(false), centroid_velocity_(Eigen::Vector2d::Zero())
+  Obstacle() : dynamic_(false), centroid_velocity_(Eigen::Vector2d::Zero()), withTrajectory_(false)
   {
   }
   
@@ -193,10 +194,30 @@ public:
   }
 
   /**
+   * @brief Predict position of the centroid based on trajectory
+   * @param[in] t time of interpolating point
+   * @param[out] position predicted position
+   * @param[out] speed predicted speed
+   */
+  virtual void predictPoseFromTrajectory(double t, PoseSE2& pose, Eigen::Vector2d& speed) const;
+
+  virtual void predictPoseFromTrajectory(double t, PoseSE2& pose) const
+  {
+    Eigen::Vector2d dummy;
+    predictPoseFromTrajectory(t, pose, dummy);
+  }
+
+  /**
     * @brief Check if the obstacle is a moving with a (non-zero) velocity
     * @return \c true if the obstacle is not marked as static, \c false otherwise
     */	
   bool isDynamic() const {return dynamic_;}
+
+  /**
+    * @brief Check if the obstacle is a moving with trajectory
+    * @return \c true if the obstacle is not marked as static, \c false otherwise
+    */	
+  bool isWithTrajectory() const {return withTrajectory_;}
 
   /**
     * @brief Set the 2d velocity (vx, vy) of the obstacle w.r.t to the centroid
@@ -246,6 +267,32 @@ public:
 
   //@}
 
+  /** @name Trajectory related methods for non-static, moving obstacles */
+  //@{ 
+
+  /**
+    * @brief Fit the trajectory points to spline. Used for interpolation.
+    * @param trajectory_spline container to store the spline parameters
+    * @param trajectory trajectory, in which time_from_start of each point is w.r.t current time
+    * @return The nearest possible distance to the obstacle at time t
+    */
+
+  /**
+    * @brief Set the trajectory of obstacle
+    * @param trajectory trajectory, in which time_from_start of each point is w.r.t current time
+    * @return The nearest possible distance to the obstacle at time t
+    */
+  void setTrajectory(const std::vector<TrajectoryPointSE2>& trajectory, bool holonomic);
+
+  const double getTrajectoryTotalTime()
+  {
+    return trajectory_.back().time_from_start.toSec();
+  }
+
+  void disableTrajectory(){withTrajectory_ = false;}
+  void disableDynamic(){dynamic_ = false;}
+
+  //@}
 
 
   /** @name Helper Functions */
@@ -277,13 +324,51 @@ public:
     // TODO:Covariance
   }
 
+  const PoseSE2& getInitPose(){return pose_init_;}
+
+  /**
+    * @brief Transforms a line to the world frame manually
+    * @param current_pose Current robot pose
+    * @param[out] line_start line_start_ in the world frame
+    * @param[out] line_end line_end_ in the world frame
+    */
+  void transformToWorld(const PoseSE2& current_pose, const Eigen::Vector2d& line_start_robot, const Eigen::Vector2d& line_end_robot, Eigen::Vector2d& line_start_world, Eigen::Vector2d& line_end_world) const
+  {
+    double cos_th = std::cos(current_pose.theta());
+    double sin_th = std::sin(current_pose.theta());
+    line_start_world.x() = current_pose.x() + cos_th * line_start_robot.x() - sin_th * line_start_robot.y();
+    line_start_world.y() = current_pose.y() + sin_th * line_start_robot.x() + cos_th * line_start_robot.y();
+    line_end_world.x() = current_pose.x() + cos_th * line_end_robot.x() - sin_th * line_end_robot.y();
+    line_end_world.y() = current_pose.y() + sin_th * line_end_robot.x() + cos_th * line_end_robot.y();
+  }
+
+  /**
+    * @brief Transforms a polygon to the world frame manually
+    * @param current_pose Current robot pose
+    * @param[out] polygon_world polygon in the world frame
+    */
+  void transformToWorld(const PoseSE2& current_pose, const Point2dContainer& polygon_robot, Point2dContainer& polygon_world) const
+  {
+    double cos_th = std::cos(current_pose.theta());
+    double sin_th = std::sin(current_pose.theta());
+    for (std::size_t i=0; i<polygon_robot.size(); ++i)
+    {
+      polygon_world[i].x() = current_pose.x() + cos_th * polygon_robot[i].x() - sin_th * polygon_robot[i].y();
+      polygon_world[i].y() = current_pose.y() + sin_th * polygon_robot[i].x() + cos_th * polygon_robot[i].y();
+    }
+  }
+
   //@}
 	
 protected:
 	   
   bool dynamic_; //!< Store flag if obstacle is dynamic (resp. a moving obstacle)
+  bool withTrajectory_; //!< Store flag if obstacle has a trajectory
+  bool holonomic_; //!< Store flag if obstacle is a holonomic robot
+  PoseSE2 pose_init_; //!< initial pose
   Eigen::Vector2d centroid_velocity_; //!< Store the corresponding velocity (vx, vy) of the centroid (zero, if _dynamic is \c true)
-  
+  std::vector<TrajectoryPointSE2> trajectory_; //!< Store the trajectory of this obstacle
+
 public:	
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
@@ -381,19 +466,46 @@ public:
   // implements getMinimumSpatioTemporalDistance() of the base class
   virtual double getMinimumSpatioTemporalDistance(const Eigen::Vector2d& position, double t) const
   {
-    return (pos_ + t*centroid_velocity_ - position).norm();
+    if (isWithTrajectory())
+    { 
+      PoseSE2 pred;
+      predictPoseFromTrajectory(t, pred);
+      return (pred.position() - position).norm();
+    }
+    else
+    {
+      return (pos_ + t*centroid_velocity_ - position).norm();
+    }
   }
 
   // implements getMinimumSpatioTemporalDistance() of the base class
   virtual double getMinimumSpatioTemporalDistance(const Eigen::Vector2d& line_start, const Eigen::Vector2d& line_end, double t) const
   {
-    return distance_point_to_segment_2d(pos_ + t*centroid_velocity_, line_start, line_end);
+    if (isWithTrajectory())
+    { 
+      PoseSE2 pred;
+      predictPoseFromTrajectory(t, pred);
+      return distance_point_to_segment_2d(pred.position(), line_start, line_end);
+    }
+    else
+    {
+      return distance_point_to_segment_2d(pos_ + t*centroid_velocity_, line_start, line_end);
+    }
   }
 
   // implements getMinimumSpatioTemporalDistance() of the base class
   virtual double getMinimumSpatioTemporalDistance(const Point2dContainer& polygon, double t) const
   {
-    return distance_point_to_polygon_2d(pos_ + t*centroid_velocity_, polygon);
+    if (isWithTrajectory())
+    {
+      PoseSE2 pred;
+      predictPoseFromTrajectory(t, pred);
+      return distance_point_to_polygon_2d(pred.position(), polygon);
+    }
+    else
+    {
+      return distance_point_to_polygon_2d(pos_ + t*centroid_velocity_, polygon);
+    }
   }
 
   // implements predictCentroidConstantVelocity() of the base class
@@ -525,19 +637,46 @@ public:
   // implements getMinimumSpatioTemporalDistance() of the base class
   virtual double getMinimumSpatioTemporalDistance(const Eigen::Vector2d& position, double t) const
   {
-    return (pos_ + t*centroid_velocity_ - position).norm() - radius_;
+    if (isWithTrajectory())
+    {
+      PoseSE2 pred;
+      predictPoseFromTrajectory(t, pred);
+      return (pred.position() - position).norm() - radius_;
+    }
+    else
+    {
+      return (pos_ + t*centroid_velocity_ - position).norm() - radius_;
+    }
   }
 
   // implements getMinimumSpatioTemporalDistance() of the base class
   virtual double getMinimumSpatioTemporalDistance(const Eigen::Vector2d& line_start, const Eigen::Vector2d& line_end, double t) const
   {
-    return distance_point_to_segment_2d(pos_ + t*centroid_velocity_, line_start, line_end) - radius_;
+    if (isWithTrajectory())
+    {
+      PoseSE2 pred;
+      predictPoseFromTrajectory(t, pred);
+      return distance_point_to_segment_2d(pred.position(), line_start, line_end) - radius_;
+    }
+    else
+    {
+      return distance_point_to_segment_2d(pos_ + t*centroid_velocity_, line_start, line_end) - radius_;
+    }
   }
 
   // implements getMinimumSpatioTemporalDistance() of the base class
   virtual double getMinimumSpatioTemporalDistance(const Point2dContainer& polygon, double t) const
   {
-    return distance_point_to_polygon_2d(pos_ + t*centroid_velocity_, polygon) - radius_;
+    if (isWithTrajectory())
+    {
+      PoseSE2 pred;
+      predictPoseFromTrajectory(t, pred);
+      return distance_point_to_polygon_2d(pred.position(), polygon) - radius_;
+    }
+    else
+    {
+      return distance_point_to_polygon_2d(pos_ + t*centroid_velocity_, polygon) - radius_;
+    }
   }
 
   // implements predictCentroidConstantVelocity() of the base class
@@ -676,22 +815,61 @@ public:
   // implements getMinimumSpatioTemporalDistance() of the base class
   virtual double getMinimumSpatioTemporalDistance(const Eigen::Vector2d& position, double t) const
   {
-    Eigen::Vector2d offset = t*centroid_velocity_;
-    return distance_point_to_segment_2d(position, start_ + offset, end_ + offset);
+    if (isWithTrajectory())
+    {
+      Eigen::Vector2d line_start_world;
+      Eigen::Vector2d line_end_world;
+      PoseSE2 pred;
+      predictPoseFromTrajectory(t, pred);
+      pred.theta() -= pose_init_.theta();
+      transformToWorld(pred, start_robot_, end_robot_,line_start_world, line_end_world);
+      return distance_point_to_segment_2d(position, line_start_world, line_end_world);
+    }
+    else
+    {
+      Eigen::Vector2d offset = t*centroid_velocity_;
+      return distance_point_to_segment_2d(position, start_ + offset, end_ + offset);
+    }
   }
 
   // implements getMinimumSpatioTemporalDistance() of the base class
   virtual double getMinimumSpatioTemporalDistance(const Eigen::Vector2d& line_start, const Eigen::Vector2d& line_end, double t) const
   {
-    Eigen::Vector2d offset = t*centroid_velocity_;
-    return distance_segment_to_segment_2d(start_ + offset, end_ + offset, line_start, line_end);
+    if (isWithTrajectory())
+    {
+      Eigen::Vector2d line_start_world;
+      Eigen::Vector2d line_end_world;
+      PoseSE2 pred;
+      predictPoseFromTrajectory(t, pred);
+      pred.theta() -= pose_init_.theta();
+      transformToWorld(pred, start_robot_, end_robot_, line_start_world, line_end_world);
+      return distance_segment_to_segment_2d(line_start_world, line_end_world, line_start, line_end);
+    }
+    else
+    {
+      Eigen::Vector2d offset = t*centroid_velocity_;
+      return distance_segment_to_segment_2d(start_ + offset, end_ + offset, line_start, line_end);
+    }
   }
 
   // implements getMinimumSpatioTemporalDistance() of the base class
   virtual double getMinimumSpatioTemporalDistance(const Point2dContainer& polygon, double t) const
   {
-    Eigen::Vector2d offset = t*centroid_velocity_;
-    return distance_segment_to_polygon_2d(start_ + offset, end_ + offset, polygon);
+    if (isWithTrajectory())
+    {
+      Eigen::Vector2d line_start_world;
+      Eigen::Vector2d line_end_world;
+      PoseSE2 pred;
+      predictPoseFromTrajectory(t, pred);
+      pred.theta() -= pose_init_.theta();
+      transformToWorld(pred, start_robot_, end_robot_, line_start_world, line_end_world);
+      return distance_segment_to_polygon_2d(line_start_world, line_end_world, polygon);
+    }
+    else
+    {
+      Eigen::Vector2d offset = t*centroid_velocity_;
+      return distance_segment_to_polygon_2d(start_ + offset, end_ + offset, polygon);
+    }
   }
 
   // implements getCentroid() of the base class
@@ -725,12 +903,19 @@ public:
   }
   
 protected:
-  void calcCentroid()	{	centroid_ = 0.5*(start_ + end_); }
+  void calcCentroid()
+  {	
+    centroid_ = 0.5*(start_ + end_); 
+    start_robot_ = start_ - centroid_;
+    end_robot_ = end_ - centroid_;
+  }
   
 private:
 	Eigen::Vector2d start_;
 	Eigen::Vector2d end_;
-	
+	Eigen::Vector2d start_robot_;
+	Eigen::Vector2d end_robot_;
+
   Eigen::Vector2d centroid_;
 
 public:	
@@ -824,22 +1009,61 @@ public:
   // implements getMinimumSpatioTemporalDistance() of the base class
   virtual double getMinimumSpatioTemporalDistance(const Eigen::Vector2d& position, double t) const
   {
-    Eigen::Vector2d offset = t*centroid_velocity_;
-    return distance_point_to_segment_2d(position, start_ + offset, end_ + offset) - radius_;
+    if (isWithTrajectory())
+    {
+      Eigen::Vector2d line_start_world;
+      Eigen::Vector2d line_end_world;
+      PoseSE2 pred;
+      predictPoseFromTrajectory(t, pred);
+      pred.theta() -= pose_init_.theta();
+      transformToWorld(pred, start_robot_, end_robot_, line_start_world, line_end_world);
+      return distance_point_to_segment_2d(position, line_start_world, line_end_world) - radius_;
+    }
+    else
+    {
+      Eigen::Vector2d offset = t*centroid_velocity_;
+      return distance_point_to_segment_2d(position, start_ + offset, end_ + offset) - radius_;
+    }
   }
 
   // implements getMinimumSpatioTemporalDistance() of the base class
   virtual double getMinimumSpatioTemporalDistance(const Eigen::Vector2d& line_start, const Eigen::Vector2d& line_end, double t) const
   {
-    Eigen::Vector2d offset = t*centroid_velocity_;
-    return distance_segment_to_segment_2d(start_ + offset, end_ + offset, line_start, line_end) - radius_;
+    if (isWithTrajectory())
+    {
+      Eigen::Vector2d line_start_world;
+      Eigen::Vector2d line_end_world;
+      PoseSE2 pred;
+      predictPoseFromTrajectory(t, pred);
+      pred.theta() -= pose_init_.theta();
+      transformToWorld(pred, start_robot_, end_robot_, line_start_world, line_end_world);
+      return distance_segment_to_segment_2d(line_start_world, line_end_world, line_start, line_end) - radius_;
+    }
+    else
+    {
+      Eigen::Vector2d offset = t*centroid_velocity_;
+      return distance_segment_to_segment_2d(start_ + offset, end_ + offset, line_start, line_end) - radius_;
+    }
   }
 
   // implements getMinimumSpatioTemporalDistance() of the base class
   virtual double getMinimumSpatioTemporalDistance(const Point2dContainer& polygon, double t) const
   {
-    Eigen::Vector2d offset = t*centroid_velocity_;
-    return distance_segment_to_polygon_2d(start_ + offset, end_ + offset, polygon) - radius_;
+    if (isWithTrajectory())
+    {
+      Eigen::Vector2d line_start_world;
+      Eigen::Vector2d line_end_world;
+      PoseSE2 pred;
+      predictPoseFromTrajectory(t, pred);
+      pred.theta() -= pose_init_.theta();
+      transformToWorld(pred, start_-centroid_, end_-centroid_, line_start_world, line_end_world);
+      return distance_segment_to_polygon_2d(line_start_world, line_end_world, polygon) - radius_;
+    }
+    else
+    {
+      Eigen::Vector2d offset = t*centroid_velocity_;
+      return distance_segment_to_polygon_2d(start_ + offset, end_ + offset, polygon) - radius_;
+    }
   }
 
   // implements getCentroid() of the base class
@@ -859,6 +1083,10 @@ public:
   void setStart(const Eigen::Ref<const Eigen::Vector2d>& start) {start_ = start; calcCentroid();}
   const Eigen::Vector2d& end() const {return end_;}
   void setEnd(const Eigen::Ref<const Eigen::Vector2d>& end) {end_ = end; calcCentroid();}
+  const double& radius() const {return radius_;}
+  void setRadius(const double& radius) {radius_ = radius;}
+  const Eigen::Vector2d& start_robocentric() const {return start_robot_;}
+  const Eigen::Vector2d& end_robocentric() const {return end_robot_;}
 
   // implements toPolygonMsg() of the base class
   virtual void toPolygonMsg(geometry_msgs::Polygon& polygon)
@@ -875,12 +1103,19 @@ public:
   }
 
 protected:
-  void calcCentroid()    {    centroid_ = 0.5*(start_ + end_); }
+  void calcCentroid()
+  {
+    centroid_ = 0.5*(start_ + end_); 
+    start_robot_ = start_ - centroid_;
+    end_robot_ = end_ - centroid_;
+  }
 
 private:
     Eigen::Vector2d start_;
     Eigen::Vector2d end_;
     double radius_ = 0.0;
+    Eigen::Vector2d start_robot_;
+    Eigen::Vector2d end_robot_;
 
   Eigen::Vector2d centroid_;
 
@@ -988,25 +1223,61 @@ public:
   // implements getMinimumSpatioTemporalDistance() of the base class
   virtual double getMinimumSpatioTemporalDistance(const Eigen::Vector2d& position, double t) const
   {
-    Point2dContainer pred_vertices;
-    predictVertices(t, pred_vertices);
-    return distance_point_to_polygon_2d(position, pred_vertices);
+    if (isWithTrajectory())
+    {
+      Point2dContainer pred_vertices;
+      PoseSE2 pred;
+      predictPoseFromTrajectory(t, pred);
+      pred.theta() -= pose_init_.theta();
+      transformToWorld(pred, vertices_robot_, pred_vertices);
+      return distance_point_to_polygon_2d(position, pred_vertices);
+    }
+    else
+    {
+      Point2dContainer pred_vertices;
+      predictVertices(t, pred_vertices);
+      return distance_point_to_polygon_2d(position, pred_vertices);
+    }
   }
 
   // implements getMinimumSpatioTemporalDistance() of the base class
   virtual double getMinimumSpatioTemporalDistance(const Eigen::Vector2d& line_start, const Eigen::Vector2d& line_end, double t) const
   {
-    Point2dContainer pred_vertices;
-    predictVertices(t, pred_vertices);
-    return distance_segment_to_polygon_2d(line_start, line_end, pred_vertices);
+    if (isWithTrajectory())
+    {
+      Point2dContainer pred_vertices;
+      PoseSE2 pred;
+      predictPoseFromTrajectory(t, pred);
+      pred.theta() -= pose_init_.theta();
+      transformToWorld(pred, vertices_robot_, pred_vertices);
+      return distance_segment_to_polygon_2d(line_start, line_end, pred_vertices);
+    }
+    else
+    {
+      Point2dContainer pred_vertices;
+      predictVertices(t, pred_vertices);
+      return distance_segment_to_polygon_2d(line_start, line_end, pred_vertices);
+    }
   }
 
   // implements getMinimumSpatioTemporalDistance() of the base class
   virtual double getMinimumSpatioTemporalDistance(const Point2dContainer& polygon, double t) const
   {
-    Point2dContainer pred_vertices;
-    predictVertices(t, pred_vertices);
-    return distance_polygon_to_polygon_2d(polygon, pred_vertices);
+    if (isWithTrajectory())
+    {
+      Point2dContainer pred_vertices;
+      PoseSE2 pred;
+      predictPoseFromTrajectory(t, pred);
+      pred.theta() -= pose_init_.theta();
+      transformToWorld(pred, vertices_robot_, pred_vertices);
+      return distance_polygon_to_polygon_2d(polygon, pred_vertices);
+    }
+    else
+    {
+      Point2dContainer pred_vertices;
+      predictVertices(t, pred_vertices);
+      return distance_polygon_to_polygon_2d(polygon, pred_vertices);
+    }
   }
 
   virtual void predictVertices(double t, Point2dContainer& pred_vertices) const
@@ -1102,7 +1373,8 @@ protected:
   
   Point2dContainer vertices_; //!< Store vertices defining the polygon (@see pushBackVertex)
   Eigen::Vector2d centroid_; //!< Store the centroid coordinates of the polygon (@see calcCentroid)
-  
+  Point2dContainer vertices_robot_;
+
   bool finalized_; //!< Flat that keeps track if the polygon was finalized after adding all vertices
   
   	
