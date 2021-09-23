@@ -121,7 +121,7 @@ int main( int argc, char** argv )
 
   obst_vector.push_back( boost::make_shared<PointObstacle>(-3,1) );
   obst_vector.push_back( boost::make_shared<PointObstacle>(6,2) );
-  obst_vector.push_back( boost::make_shared<PointObstacle>(0,0.1) );
+  obst_vector.push_back( boost::make_shared<PointObstacle>(0,-1) );
 //  obst_vector.push_back( boost::make_shared<LineObstacle>(1,1.5,1,-1.5) ); //90 deg
 //  obst_vector.push_back( boost::make_shared<LineObstacle>(1,0,-1,0) ); //180 deg
 //  obst_vector.push_back( boost::make_shared<PointObstacle>(-1.5,-0.5) );
@@ -131,6 +131,13 @@ int main( int argc, char** argv )
   obst_vector.at(0)->setCentroidVelocity(vel);
   vel = Eigen::Vector2d(-0.3, -0.2);
   obst_vector.at(1)->setCentroidVelocity(vel);
+
+  if (!config.obstacles.include_dynamic_obstacles)
+  {
+    obst_vector.at(0)->disableDynamic();
+    obst_vector.at(1)->disableDynamic();
+  }     
+
 
   /*
   PolygonObstacle* polyobst = new PolygonObstacle;
@@ -183,6 +190,8 @@ int main( int argc, char** argv )
   obstacle_withTrajectory->setTrajectory(trajectory, !config.trajectory.exact_arc_length);
   obstacle_withTrajectory->radius() = 0.5;
   obstacle_withTrajectory->position() = obstacle_withTrajectory->getInitPose().position();
+  if (!config.obstacles.include_obstacle_trajectory){obstacle_withTrajectory->disableTrajectory();}
+  if (!config.obstacles.include_dynamic_obstacles){obstacle_withTrajectory->disableDynamic();}     
 
   obst_vector.push_back(ObstaclePtr(obstacle_withTrajectory));
 
@@ -405,6 +414,7 @@ void CB_obstacle_marker(const visualization_msgs::InteractiveMarkerFeedbackConst
     return;
   PointObstacle* pobst = static_cast<PointObstacle*>(obst_vector.at(index).get());
   pobst->position() = Eigen::Vector2d(feedback->pose.position.x,feedback->pose.position.y);	  
+  if (!config.obstacles.include_dynamic_obstacles){pobst->disableDynamic();}     
 }
 
 void CB_obstacle_viapoint_marker(const visualization_msgs::InteractiveMarkerFeedbackConstPtr &feedback)
@@ -440,6 +450,8 @@ void CB_obstacle_viapoint_marker(const visualization_msgs::InteractiveMarkerFeed
   generateTrajectroyFromViaPoints(trajectory, dyn_obst_viapts);
   pobst->setTrajectory(trajectory, !config.trajectory.exact_arc_length);
   pobst->position() = pobst->getInitPose().position();
+  if (!config.obstacles.include_obstacle_trajectory){pobst->disableTrajectory();}
+  if (!config.obstacles.include_dynamic_obstacles){pobst->disableDynamic();}     
 
 }
 
